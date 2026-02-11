@@ -308,6 +308,21 @@ sources:
       # Level 2
       - target/snitch_cluster/generated/snax_alu/snax_alu_wrapper.sv
 
+  # TODO: SNAX MX ALU
+  - target: snax_mx_alu
+    files:
+      # Level 0
+      - hw/snax_mx_alu/src/snax_mx_alu_csr.sv
+      - hw/snax_mx_alu/src/snax_mx_alu_pe.sv
+      - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_reqrspman_ReqRspManager.sv
+      - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_Streamer.sv
+      # Level 1
+      - hw/snax_mx_alu/src/snax_mx_alu_shell_wrapper.sv
+      - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_csrman_wrapper.sv
+      - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_streamer_wrapper.sv
+      # Level 2
+      - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_wrapper.sv
+
   # Hypercorex
   - target: hypercorex
     files:
