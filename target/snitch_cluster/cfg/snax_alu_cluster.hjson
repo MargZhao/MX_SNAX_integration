@@ -157,9 +157,9 @@
     snax_alu_streamer_template :{
 
         data_reader_params: {
-            spatial_bounds: [[4], [4]],
-            temporal_dim: [1, 1],
-            num_channel: [4, 4],
+            spatial_bounds: [[4], [4]],//spatial unrolling factor for each data mover(parfor
+            temporal_dim: [1, 1],//dimension(number) of for loops
+            num_channel: [4, 4],//how many TCDM ports for a streamer
             fifo_depth: [8, 8],
         },
 
@@ -170,6 +170,6 @@
             fifo_depth: [8],
         },
 
-        snax_library_name: "snax-alu",
+        snax_library_name: "snax-alu",//where to upload the regenerated streamer register header file.
     }
 }
