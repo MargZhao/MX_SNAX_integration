@@ -4,6 +4,7 @@
 
 `include "axi/typedef.svh"
 
+//module testharness import ${cfg["cluster"]["name"]}_pkg::*;
 module testharness import ${cfg["cluster"]["name"]}_pkg::*; (
   input logic clk_i,
   input logic rst_ni

@@ -14,9 +14,9 @@ module snax_mx_shell_wrapper #(
   parameter int unsigned RegRWCount   = 3,
   parameter int unsigned RegROCount   = 2,
   //---------------Accelerator and streamer parameters-----------------------
-  parameter int unsigned TileRows     = 8,//parfor M
-  parameter int unsigned TileCols     = 8,//parfor N
-  parameter int unsigned VectorSize   = 4,//parfor K // Accelerator parameters
+  parameter int unsigned TileRows     = 1,//parfor M
+  parameter int unsigned TileCols     = 1,//parfor N
+  parameter int unsigned VectorSize   = 1,//parfor K // Accelerator parameters
   parameter int unsigned NumPE       = TileRows*TileCols,
   parameter int unsigned OutputDataWidth = 32,//TODO: FP32, later can be BF16
   parameter int unsigned InputDataWidth  = 8,
@@ -245,7 +245,7 @@ module snax_mx_shell_wrapper #(
   logic B_valid;
   logic A_ready;
   logic B_ready;
-  logic send_output;
+  logic send_output;//to send accumulation sum
 
   //TODO: check this part, create own PE wrapper
   // M_out_width is ony Mantissa width of output, so for FP32 should be 23 not 32
@@ -256,36 +256,36 @@ module snax_mx_shell_wrapper #(
       .rstn (rst_ni),
 
       // Control Signals for inputs
-      .prec_mode(csr_reg_set_buffer[0][1:0]),  // Precision mode for MACs result?
+      //.prec_mode(csr_reg_set_buffer[0][1:0]),  // Precision mode for MACs result?
       .A_mode  (csr_reg_set_buffer[0][4:2]),  //  mode for input A
       .B_mode  (csr_reg_set_buffer[0][7:5]),  //  mode for input B
 
       //TODO: check if this is needed
-      .prec_mode_quan(csr_reg_set_buffer[0][9:8]),  // Precision mode for quantization of result
-      .FP_mode_quan  (csr_reg_set_buffer[0][11:10]),  // FP mode for quantization
+      //.prec_mode_quan(csr_reg_set_buffer[0][9:8]),  // Precision mode for quantization of result
+      .Result_mode_quan  (csr_reg_set_buffer[0][11:10]),  // FP mode for quantization
 
       //NEW
-      .group_size(csr_reg_set_buffer[0][15:12]), // group size for group-based computation, only for non-INT8 mode
-      .shared_format(csr_reg_set_buffer[0][18:16]),// ExMy format  // 0 for shared exponent format 1, 1 for shared exponent format 2, only for non-INT8 mode
+      .group_size(csr_reg_set_buffer[0][15:14]), // group size for group-based computation, only for non-INT8 mode
+      .shared_format(csr_reg_set_buffer[0][19:16]),// ExMy format  
       //NEW
-      
+
       .A_valid(A_valid),  //Stef: if both 1 then accumulate
       .B_valid(B_valid),  //Stef: if both 1 then accumulate
       .A_ready(A_ready),               // Ready signal for A input
       .B_ready(B_ready),               // Ready signal for B input
 
       // Data Inputs
-      .A_INT8(A_INT8),  // [0:7][7:0] 64-bit INT8 input A
-      .B_INT8(B_INT8),  // [0:7][7:0] 64-bit INT8 input B
+      .A(A_INT8),  // [0:7][7:0] 64-bit INT8 input A
+      .B(B_INT8),  // [0:7][7:0] 64-bit INT8 input B
 
-      .A_FP8(A_FP8),  // [0:7][0:3][7:0] 256-bit FP8 input A
-      .B_FP8(B_FP8),  // [0:7][0:3][7:0] 256-bit FP8 input B
+      // .A_FP8(A_FP8),  // [0:7][0:3][7:0] 256-bit FP8 input A
+      // .B_FP8(B_FP8),  // [0:7][0:3][7:0] 256-bit FP8 input B
 
-      .A_FP6(A_FP6),  // [0:7][0:3][5:0] 192-bit FP6 input A
-      .B_FP6(B_FP6),  // [0:7][0:3][5:0] 192-bit FP6 input B
+      // .A_FP6(A_FP6),  // [0:7][0:3][5:0] 192-bit FP6 input A
+      // .B_FP6(B_FP6),  // [0:7][0:3][5:0] 192-bit FP6 input B
 
-      .A_FP4(A_FP4),  // [0:7][0:7][3:0] 256-bit FP4 input A
-      .B_FP4(B_FP4),  // [0:7][0:7][3:0] 256-bit FP4 input B
+      // .A_FP4(A_FP4),  // [0:7][0:7][3:0] 256-bit FP4 input A
+      // .B_FP4(B_FP4),  // [0:7][0:7][3:0] 256-bit FP4 input B
 
       .shared_exp_A(shared_exp_A),  // 8-bit shared exponent A
       .shared_exp_B(shared_exp_B),  // 8-bit shared exponent B

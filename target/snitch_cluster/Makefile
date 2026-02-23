@@ -77,7 +77,8 @@ SYN_BENDER  := $(SYN_BENDER)  $(shell cat $(GENERATED_DIR)/bender_targets.tmp)
 
 # List manual conditions for different configurations
 
-ifeq (${CFG_OVERRIDE}, cfg/snax_mac_cluster.hjson)
+
+ifeq (${CFG_OVERRIDE}, cfg/snax_mx_alu_cluster.hjson)
 
 	BYPASS_ACCGEN = true
 
