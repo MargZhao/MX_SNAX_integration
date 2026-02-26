@@ -519,6 +519,8 @@ def main():
                 cfg, f"{acc_cfgs[i]['tag_name']}_streamer"
             )
             # Generate chisel component using chisel generation script
+            print(f"Generating chisel streamer for {acc_cfgs[i]['snax_acc_name']} ")
+            print(f"DEBUG: streamer_cfg is: {streamer_cfg}")
             gen_chisel_file(
                 chisel_path=args.chisel_path,
                 chisel_param="snax.streamer.StreamerGen",

@@ -313,11 +313,8 @@ sources:
     files:
       # Level 0
       - hw/snax_mx_alu/source/mxfp8_pkg.sv
-      - hw/snax_mx_alu/source/mxfp8_mult.sv
-      - hw/snax_mx_alu/source/mxfp8_classifier.sv
-      - hw/snax_mx_alu/source/mxfp8_dotp.sv
-      - hw/snax_mx_alu/source/PE_wrapper.sv
-      - hw/snax_mx_alu/source/adder_tree.sv
+      - hw/snax_mx_alu/source/gemm_engine_4way.sv
+      - hw/snax_mx_alu/source/onedotproduct.sv
       - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_reqrspman_ReqRspManager.sv
       - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_Streamer.sv
       # Level 1
@@ -469,6 +466,9 @@ sources:
   - target: snax_exercise_cluster
     files:
       - target/snitch_cluster/generated/snax_exercise_cluster_wrapper.sv
+  - target: snax_mx_cluster
+    files:
+      - target/snitch_cluster/generated/snax_mx_cluster_wrapper.sv
   - target: snax_hypercorex_cluster
     files:
       - target/snitch_cluster/generated/snax_hypercorex_cluster_wrapper.sv

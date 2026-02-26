@@ -169,7 +169,7 @@
         // --- 写入端配置 (对应输出 out) ---
         data_writer_params: {
             // 空间展开度：完全照搬旧版的 spatial_bounds
-            spatial_bounds: [[2]],
+            spatial_bounds: [[4]],
             // 循环层数：同样是 1 层嵌套
             temporal_dim: [1],
             // TCDM 通道数：照搬旧版的 tcdm_ports_num。

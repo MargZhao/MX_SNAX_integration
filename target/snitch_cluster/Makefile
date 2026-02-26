@@ -78,12 +78,6 @@ SYN_BENDER  := $(SYN_BENDER)  $(shell cat $(GENERATED_DIR)/bender_targets.tmp)
 # List manual conditions for different configurations
 
 
-ifeq (${CFG_OVERRIDE}, cfg/snax_mx_alu_cluster.hjson)
-
-	BYPASS_ACCGEN = true
-
-endif
-
 ifeq (${CFG_OVERRIDE}, cfg/snax_mac_mult_cluster.hjson)
 
 	BYPASS_ACCGEN = true
@@ -119,9 +113,11 @@ rtl-cluster-gen: | $(GENERATED_DIR)
 
 	$(CLUSTER_GEN) -c ${CFG_OVERRIDE} -o $(GENERATED_DIR) --wrapper
 
-$(GENERATED_DIR)/bender_targets.tmp: | $(GENERATED_DIR)
+# $(GENERATED_DIR)/bender_targets.tmp: | $(GENERATED_DIR)
+# 	${WRAPPER_GEN} --cfg_path="$(CFG_FILE)" --get_bender_targets > $(GENERATED_DIR)/bender_targets.tmp
+$(GENERATED_DIR)/bender_targets.tmp: $(CFG_FILE) ${WRAPPER_GEN} | $(GENERATED_DIR)
 	${WRAPPER_GEN} --cfg_path="$(CFG_FILE)" --get_bender_targets > $(GENERATED_DIR)/bender_targets.tmp
-
+	
 rtl-gen: $(GENERATED_DIR)/bender_targets.tmp rtl-snax-gen rtl-cluster-gen
 
 VSIM_BENDER += -t QUESTA_SIM

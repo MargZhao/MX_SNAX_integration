@@ -48,6 +48,7 @@ module snax_exercise_pe #(
 
     final_result = partial_prods[0] +
                    partial_prods[1] +
+                   partial_prods[2] +
                    partial_prods[3] +
                    partial_prods[4] +
                    partial_prods[5] +

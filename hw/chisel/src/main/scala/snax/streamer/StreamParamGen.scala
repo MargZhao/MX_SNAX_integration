@@ -22,29 +22,43 @@ object StreamerParametersGen {
   def readerParams = Seq(
     new ReaderWriterParam(
       spatialBounds = List(
-        8
+        1
       ),
       temporalDimension = 1,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
-      numChannel = 8,
-      addressBufferDepth = 16,
-      dataBufferDepth = 16,
+      numChannel = 1,
+      addressBufferDepth = 8,
+      dataBufferDepth = 8,
       configurableChannel = false,
       crossClockDomain = hasCrossClockDomain
    ), 
     new ReaderWriterParam(
       spatialBounds = List(
-        8
+        1
       ),
       temporalDimension = 1,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
-      numChannel = 8,
-      addressBufferDepth = 16,
-      dataBufferDepth = 16,
+      numChannel = 1,
+      addressBufferDepth = 8,
+      dataBufferDepth = 8,
+      configurableChannel = false,
+      crossClockDomain = hasCrossClockDomain
+   ), 
+    new ReaderWriterParam(
+      spatialBounds = List(
+        1
+      ),
+      temporalDimension = 1,
+      tcdmDataWidth = 64,
+      tcdmSize = 128,
+      tcdmLogicWordSize = Seq(256),
+      numChannel = 1,
+      addressBufferDepth = 8,
+      dataBufferDepth = 8,
       configurableChannel = false,
       crossClockDomain = hasCrossClockDomain
     )
@@ -60,8 +74,8 @@ object StreamerParametersGen {
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
       numChannel = 2,
-      addressBufferDepth = 16,
-      dataBufferDepth = 16,
+      addressBufferDepth = 8,
+      dataBufferDepth = 8,
       configurableChannel = false,
       crossClockDomain = hasCrossClockDomain
     )
@@ -69,6 +83,6 @@ object StreamerParametersGen {
 
   def readerWriterParams = Seq()
 
-  def tagName = "snax_exercise_"
-  def headerFilepath = "../../target/snitch_cluster/sw/snax/snax-exercise/include"
+  def tagName = "snax_mx_alu_"
+  def headerFilepath = "../../target/snitch_cluster/sw/snax/snax-mx/include"
 }

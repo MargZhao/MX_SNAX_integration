@@ -52,6 +52,9 @@ ifeq (${CFG_OVERRIDE}, cfg/snax_hypercorex_cluster.hjson)
 SUBDIRS += snax/hypercorex
 endif
 
+ifeq (${CFG_OVERRIDE}, cfg/snax_exercise_cluster.hjson)
+SUBDIRS += snax/snax-exercise
+endif
 .PHONY: all $(SUBDIRS)
 
 all: $(SUBDIRS)

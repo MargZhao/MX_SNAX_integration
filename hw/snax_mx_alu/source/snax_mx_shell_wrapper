@@ -249,61 +249,41 @@ module snax_mx_shell_wrapper #(
 
   //TODO: check this part, create own PE wrapper
   // M_out_width is ony Mantissa width of output, so for FP32 should be 23 not 32
-  Block_PE_wrapper #(
-  // .M_out_width(23) // Use the one default in the block PE
-  ) Block_PE_wrapper_i (
-      .clk_i(clk_i),
-      .rstn (rst_ni),
-
-      // Control Signals for inputs
-      //.prec_mode(csr_reg_set_buffer[0][1:0]),  // Precision mode for MACs result?
-      .A_mode  (csr_reg_set_buffer[0][4:2]),  //  mode for input A
-      .B_mode  (csr_reg_set_buffer[0][7:5]),  //  mode for input B
-
-      //TODO: check if this is needed
-      //.prec_mode_quan(csr_reg_set_buffer[0][9:8]),  // Precision mode for quantization of result
-      .Result_mode_quan  (csr_reg_set_buffer[0][11:10]),  // FP mode for quantization
-
-      //NEW
-      .group_size(csr_reg_set_buffer[0][15:14]), // group size for group-based computation, only for non-INT8 mode
-      .shared_format(csr_reg_set_buffer[0][19:16]),// ExMy format  
-      //NEW
-
-      .A_valid(A_valid),  //Stef: if both 1 then accumulate
-      .B_valid(B_valid),  //Stef: if both 1 then accumulate
-      .A_ready(A_ready),               // Ready signal for A input
-      .B_ready(B_ready),               // Ready signal for B input
-
-      // Data Inputs
-      .A(A_INT8),  // [0:7][7:0] 64-bit INT8 input A
-      .B(B_INT8),  // [0:7][7:0] 64-bit INT8 input B
-
-      // .A_FP8(A_FP8),  // [0:7][0:3][7:0] 256-bit FP8 input A
-      // .B_FP8(B_FP8),  // [0:7][0:3][7:0] 256-bit FP8 input B
-
-      // .A_FP6(A_FP6),  // [0:7][0:3][5:0] 192-bit FP6 input A
-      // .B_FP6(B_FP6),  // [0:7][0:3][5:0] 192-bit FP6 input B
-
-      // .A_FP4(A_FP4),  // [0:7][0:7][3:0] 256-bit FP4 input A
-      // .B_FP4(B_FP4),  // [0:7][0:7][3:0] 256-bit FP4 input B
-
-      .shared_exp_A(shared_exp_A),  // 8-bit shared exponent A
-      .shared_exp_B(shared_exp_B),  // 8-bit shared exponent B
-
-      // Control signal for output
-      // Stef: when high the quantization happens and we get an output
-      // So if assert this signal, make sure to take the data once the output valid is high (highest priority, no backpressure)
-      .send_output(send_output),  // Control signal for output
-
-      // Data Outputs
-      .Out           (Out),            // [0:7][0:7][7:0] Output data
-      .shared_exp_out(shared_exp_out)  // 8-bit shared exponent output
-
-      // !!!missing port!!!
-      // .O_valid(O_valid),
-      // .O_ready           (O_ready),
-
-  );
+  gemm_engine_4way #(
+    .SRC_WIDTH(InputDataWidth),
+    .DST_WIDTH(OutputDataWidth),
+    SCALE_WIDTH(8),
+  )(
+    //clk and rst
+    .clk_i(clk_i),
+    .rst_ni(rst_ni),
+    //CSR config
+    // Control Signals for inputs
+    .A_mode  (csr_reg_set_buffer[0][4:2]),  //  mode for input A
+    .B_mode  (csr_reg_set_buffer[0][7:5]),  //  mode for input B
+    //TODO: check if this is needed
+    //.prec_mode_quan(csr_reg_set_buffer[0][9:8]),  // Precision mode for quantization of result
+    .Result_mode_quan  (csr_reg_set_buffer[0][11:10]),  // FP mode for quantization
+    .group_size(csr_reg_set_buffer[0][15:14]), 
+    .shared_format(csr_reg_set_buffer[0][19:16]),// ExMy format  
+    // Data Inputs/outputs
+    .op_a_i(A_INT8),
+    .op_b_i(B_INT8),
+    .shared_exp_A_i(shared_exp_A),
+    .shared_exp_B_i(shared_exp_B),
+    .C_o(Out),
+    .shared_exp_out_o(shared_exp_out)
+    // Control signal for in/out
+    .acc_reset_i(reset_acc),// when send_output is 1, the PE will save the output result and prepare for next accumulation, otherwise it will keep accumulating
+    .send_output_i(send_output),// to indicate when to send out the output, this is determined by the accumulation count and the preset count in CSR
+    .A_valid_i(A_valid),//good to go if all input are valid
+    .A_ready_o(A_ready),
+    .B_valid_i(B_valid),
+    .B_ready_o(B_ready),
+    //.Res_valid_o  (O_valid),
+    //.Res_ready_i  (O_ready)
+  )
+  
 
   // -----------------------------------------------------------
   // -----------------------------------------------------------
@@ -336,26 +316,31 @@ module snax_mx_shell_wrapper #(
   assign stream2acc_1_ready_o = all_input_valid && B_ready && acc_busy && !next_cycle_keep_output;
   assign stream2acc_2_ready_o = stream2acc_0_ready_o && stream2acc_1_ready_o;
 
-  logic [31:0] computation_fire_counter;
+  logic [31:0] accumulation_counter;
+  logic
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (rst_ni == 1'b0) begin
-      computation_fire_counter <= 32'b0;  // Reset counter
+      accumulation_counter <= 32'b0;  // Reset counter
     end else begin
-      if (computation_fire && (computation_fire_counter <= csr_reg_set_buffer[1] - 1)) begin
-        computation_fire_counter <= computation_fire_counter + 1;
+      if (computation_fire && (accumulation_counter <= csr_reg_set_buffer[1] - 1)) begin
+        accumulation_counter <= accumulation_counter + 1;
       end else if (send_output) begin
-        computation_fire_counter <= 32'b0;  // Reset counter on output fire once give the send_out signal
+        accumulation_counter <= 32'b0;  // Reset counter on output fire once give the send_out signal
       end else if (current_state == IDLE) begin
-        computation_fire_counter <= 32'b0;  // Reset counter on current_state change
+        accumulation_counter <= 32'b0;  // Reset counter on current_state change
       end
     end
   end
+
+  //to reset the accumulation
+  logic reset_acc;
+  assign reset_acc = (accumulation_counter == 32'b0);
 
   assign A_valid = computation_fire;
   assign B_valid = computation_fire;
 
   // after programmed time of success computation, set the send_output signal to 1 only when there is on stall on the output
-  assign send_output = (computation_fire_counter == csr_reg_set_buffer[1]) && acc2stream_0_ready_i && acc_busy;
+  assign send_output = (accumulation_counter == csr_reg_set_buffer[1]) && acc2stream_0_ready_i && acc_busy;
 
   assign acc2stream_0_valid_o = send_output && acc_busy;
 
@@ -378,97 +363,7 @@ module snax_mx_shell_wrapper #(
 
   assign csr_reg_ro_set_o[1] = performance_counter;
 
-  // logic [NumPE-1:0] a_ready;
-  // logic [NumPE-1:0] b_ready;
-  // logic [NumPE-1:0] result_valid;
-
-  // // Control signals
-  // logic       acc_output_success;
-  // logic       acc_ready;
-  // logic [1:0] csr_alu_config;
-
-  // // Read only signals towards CSR manager
-  // logic [RegROCount-1:0][RegDataWidth-1:0] csr_reg_ro_set;
-
-  // //-------------------------------
-  // // Re-mapping
-  // //-------------------------------
-
-  // // Re-mapping for configuration registers
-  // // This is doing some SystemVerilog part slicing!
-  // always_comb begin
-  //   for (int i = 0; i < NumPE; i++) begin
-  //     // De-concatanating the input signals
-  //     a_split[i] = stream2acc_0_data_i[i*DataWidth+:DataWidth];
-  //     b_split[i] = stream2acc_1_data_i[i*DataWidth+:DataWidth];
-
-  //     // Concatenating the output signals
-  //     acc2stream_0_data_o[i*DataWidth+:DataWidth] = c_split[i];
-  //   end
-
-  //   // Inputs are read when all ready signals are ready
-  //   // Output valid is valid only when all outputs are valid
-  //   stream2acc_0_ready_o = &a_ready;
-  //   stream2acc_1_ready_o = &b_ready;
-  //   acc2stream_0_valid_o = &result_valid;
-  // end
-
-  // //-------------------------------
-  // // Combinational logic
-  // //-------------------------------
-  // assign acc_output_success = acc2stream_0_valid_o && acc2stream_0_ready_i;
-
-  // //-------------------------------
-  // // CSR Manager
-  // //-------------------------------
-  // snax_alu_csr #(
-  //   .RegDataWidth         ( RegDataWidth        )
-  // ) i_simple_alu_csr (
-  //   //-------------------------------
-  //   // Clocks and reset
-  //   //-------------------------------
-  //   .clk_i                ( clk_i               ),
-  //   .rst_ni               ( rst_ni              ),
-  //   //-------------------------------
-  //   // Register config inputs from CSR manager
-  //   //-------------------------------
-  //   .csr_reg_set_i        ( csr_reg_set_i       ),
-  //   .csr_reg_set_valid_i  ( csr_reg_set_valid_i ),
-  //   .csr_reg_set_ready_o  ( csr_reg_set_ready_o ),
-  //   //-------------------------------
-  //   // Register config inputs from CSR manager
-  //   //-------------------------------
-  //   .csr_reg_ro_set_o     ( csr_reg_ro_set_o    ),
-  //   //-------------------------------
-  //   // Direct register control signals
-  //   //-------------------------------
-  //   .acc_output_success_i ( acc_output_success  ),
-  //   .acc_ready_o          ( acc_ready           ),
-  //   .csr_alu_config_o     ( csr_alu_config      )
-  // );
-
-  // //-------------------------------
-  // // Generate parallel arrays
-  // //-------------------------------
-  // for (genvar i = 0; i < NumPE; i ++) begin: gen_muls
-  //   snax_alu_pe #(
-  //     .DataWidth      ( DataWidth            )
-  //   ) i_snax_alu_pe (
-  //     .clk_i          ( clk_i                ),
-  //     .rst_ni         ( rst_ni               ),
-  //     .a_i            ( a_split[i]           ),
-  //     .a_valid_i      ( stream2acc_0_valid_i ),
-  //     .a_ready_o      ( a_ready[i]           ),
-  //     .b_i            ( b_split[i]           ),
-  //     .b_valid_i      ( stream2acc_1_valid_i ),
-  //     .b_ready_o      ( b_ready[i]           ),
-  //     .c_o            ( c_split[i]           ),
-  //     .c_valid_o      ( result_valid[i]      ),
-  //     .c_ready_i      ( acc2stream_0_ready_i ),
-  //     .acc_ready_i    ( acc_ready            ),
-  //     .alu_config_i   ( csr_alu_config       )
-  //   );
-  // end
+ 
 
 
 endmodule
