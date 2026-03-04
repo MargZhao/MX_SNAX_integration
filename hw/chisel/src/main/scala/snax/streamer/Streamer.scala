@@ -8,10 +8,10 @@ import chisel3.util._
 
 import play.api.libs.json._
 import snax.DataPathExtension._
-import snax.reqRspManager._
 import snax.readerWriter._
+import snax.reqRspManager.ReqRspManager
+import snax.reqRspManager.SnaxReqRspIO
 import snax.utils._
-import snax.reqRspManager.{ReqRspManager, SnaxReqRspIO}
 
 // data to accelerator interface generator
 // a vector of decoupled interface with configurable number and configurable width for each port
@@ -48,12 +48,12 @@ class StreamerDataIO(param: StreamerParam) extends Bundle {
   val tcdm_req =
     (Vec(
       param.tcdmPortsNum,
-      Decoupled(new RegReq(param.addrWidth, param.tcdmDataWidth))
+      Decoupled(new SparseTCDMReq(param.addrWidth, param.tcdmDataWidth))
     ))
   // response interface with p_valid
   val tcdm_rsp = (Vec(
     param.tcdmPortsNum,
-    Flipped(Valid(new RegRsp(param.tcdmDataWidth)))
+    Flipped(Valid(new SparseTCDMRsp(param.tcdmDataWidth)))
   ))
 }
 
@@ -939,6 +939,10 @@ object StreamerGen {
 
           case _ => Seq.empty
         }
+
+      println(
+        s"Generating datapath extension for streamer with input: $readerDatapathExtentionStr"
+      )
 
       var readerDatapathExtentionPerStreamer = Seq[HasDataPathExtension]()
       val toolbox                            = currentMirror.mkToolBox()

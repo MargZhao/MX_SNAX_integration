@@ -13,3 +13,9 @@ class RegReq(addrWidth: Int, dataWidth: Int) extends Bundle {
 class RegRsp(dataWidth: Int) extends Bundle {
   val data = UInt(dataWidth.W)
 }
+
+class SparseTCDMReq(addrWidth: Int, dataWidth: Int) extends RegReq(addrWidth, dataWidth) {
+  val priority = Bool()
+}
+
+class SparseTCDMRsp(dataWidth: Int) extends RegRsp(dataWidth)

@@ -64,9 +64,8 @@ SparseInterconnect sparse_interconnect_i (
         .io_tcdmReqs_${idx}_bits_amo   ( req_i[${idx}].q.amo   ),
         .io_tcdmReqs_${idx}_bits_data  ( req_i[${idx}].q.data  ),
         .io_tcdmReqs_${idx}_bits_strb  ( req_i[${idx}].q.strb  ),
+        .io_tcdmReqs_${idx}_bits_priority  ( req_i[${idx}].q.user.tcdm_priority   ),
     % endfor
-    // user signal is not used
-    // .io_tcdmReqs_${idx}_bits_user  ( req_i[${idx}].q.user  ),
 
     // Tcdm Responses, the ready signal is set to 1, it is ignored by the tcdm
     % for idx in range(cfg["sparse_interconnect_cfg"]["NumInp"]):
@@ -84,6 +83,7 @@ SparseInterconnect sparse_interconnect_i (
         .io_memReqs_${idx}_bits_amo   ( mem_req_o_amo[${idx}] ),
         .io_memReqs_${idx}_bits_data  ( mem_req_o[${idx}].q.data  ),
         .io_memReqs_${idx}_bits_strb  ( mem_req_o[${idx}].q.strb  ),
+        .io_memReqs_${idx}_bits_priority  ( ),
     % endfor
     // user signal not used
     // .io_memReqs_${idx}_bits_user  ( mem_req_o[${idx}].q.user  ),

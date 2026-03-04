@@ -34,30 +34,8 @@ ifeq ($(CFG_OVERRIDE), cfg/snax_multi_alu_cluster.hjson)
 SUBDIRS += snax-alu
 SUBDIRS += snax-multi-alu
 endif
-ifeq ($(CFG_OVERRIDE), cfg/snax_KUL_dse_cluster_3D.hjson)
-SUBDIRS += snax-data-reshuffler
-SUBDIRS += snax-gemmx-matmul
-SUBDIRS += snax-gemmx-conv
-endif
-ifeq ($(CFG_OVERRIDE), cfg/snax_KUL_dse_cluster_2D.hjson)
-SUBDIRS += snax-data-reshuffler
-SUBDIRS += snax-gemmx-matmul
-endif
-ifeq ($(CFG_OVERRIDE), cfg/snax_KUL_dse_cluster_1D.hjson)
-SUBDIRS += snax-data-reshuffler
-SUBDIRS += snax-gemmx-matmul
-SUBDIRS += snax-gemmx-conv
-endif
-ifeq ($(CFG_OVERRIDE), cfg/snax_xdma_cluster.hjson)
-SUBDIRS += snax-xdma-memset
-SUBDIRS += snax-xdma-maxpool
-SUBDIRS += snax-xdma-transpose
-SUBDIRS += snax-xdma-reshape-comparison
-endif
 ifeq ($(CFG_OVERRIDE), cfg/snax_KUL_cluster.hjson)
 SUBDIRS += snax-xdma-memset
-SUBDIRS += snax-xdma-maxpool
-SUBDIRS += snax-xdma-transpose
 SUBDIRS += snax-xdma-reshape-comparison
 endif
 ifeq ($(CFG_OVERRIDE), cfg/snax_compiler_test_cluster.hjson)
@@ -70,13 +48,16 @@ SUBDIRS += snax-xdma-rescale-down
 SUBDIRS += snax-xdma-rescale-up
 SUBDIRS += snax-xdma-avgpool
 endif
-ifeq ($(CFG_OVERRIDE), cfg/snax_versacore_cluster.hjson)
-SUBDIRS += snax-versacore-matmul
-SUBDIRS += snax-versacore-matmul-profile
+ifeq ($(CFG_OVERRIDE), cfg/snax_versacore_to_cluster.hjson)
+SUBDIRS += snax-versacore-to-matmul
+SUBDIRS += snax-versacore-to-matmul-profile
 SUBDIRS += snax-xdma-memset
 SUBDIRS += snax-xdma-maxpool
 SUBDIRS += snax-xdma-transpose
 SUBDIRS += snax-xdma-reshape-comparison
+endif
+ifeq ($(CFG_OVERRIDE), cfg/snax_versacore_dse_cluster.hjson)
+SUBDIRS += snax-versacore-dse-matmul-profile
 endif
 SUBDIRS += snax-multi-cluster-playground
 ifeq ($(CFG_OVERRIDE), cfg/snax_hypercorex_cluster.hjson)

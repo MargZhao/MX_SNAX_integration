@@ -21,10 +21,10 @@ Naming convention:
     }
     cluster:
     {
-        name: snax_versacore_cluster
+        name: snax_versacore_to_cluster
         bender_target:
         [
-            snax_versacore_cluster
+            snax_versacore_to_cluster
             sparse_interconnect
         ]
         boot_addr: 4096
@@ -58,8 +58,6 @@ Naming convention:
             emaw: 2
             emas: 1
         }
-        use_ax_bw_converter: true
-        converted_axi_bandwidth: 256
         timing:
         {
             lat_comp_fp32: 3
@@ -148,7 +146,7 @@ Naming convention:
                     ]
                     [
                         16
-                        4
+                        8
                     ]
                 ]
                 snax_num_rw_csr: 7
@@ -196,7 +194,7 @@ Naming convention:
                 snax_versacore_serial_a_width: 2048
                 snax_versacore_serial_b_width: 4096
                 snax_versacore_serial_c_d_width: 1024
-                snax_versacore_adder_tree_delay: 2
+                snax_versacore_adder_tree_delay: 0
                 snax_versacore_spatial_unrolling:
                 [
                     [
@@ -221,9 +219,9 @@ Naming convention:
                             64
                         ]
                         [
-                            4
-                            64
-                            4
+                            8
+                            32
+                            8
                         ]
                     ]
                 ]
@@ -235,6 +233,9 @@ Naming convention:
                 {
                     $ref: "#/snax_versacore_streamer_template"
                 }
+                granularity_a: 1
+                granularity_b: 16
+                granularity_c_d: 8
             }
         ]
         snax_use_custom_ports: false
@@ -253,7 +254,7 @@ Naming convention:
         {
             bender_target:
             [
-                snax_versacore_cluster_xdma
+                snax_versacore_to_cluster_xdma
             ]
             cfg_io_width: 32
             max_multicast: 16
@@ -266,29 +267,8 @@ Naming convention:
             writer_extensions:
             {
                 HasVerilogMemset: {}
-                HasTransposer:
-                {
-                    row:
-                    [
-                        8
-                        8
-                    ]
-                    col:
-                    [
-                        8
-                        8
-                    ]
-                    elementWidth:
-                    [
-                        8
-                        16
-                    ]
-                }
             }
-            reader_extensions:
-            {
-                HasMaxPool: {}
-            }
+            reader_extensions:{}
         }
         xdma: true
         xssr: false
@@ -353,6 +333,79 @@ Naming convention:
                     64
                 ]
             ]
+            datapath_extensions:
+            [
+                {
+                    HasIntlowToInthighConverter:
+                    {
+                        dataWidth: 2048
+                    }
+                    HasTransposer:
+                    {
+                        row:
+                        [
+                            32
+                            1
+                            4
+                            8
+                            8
+                        ]
+                        col:
+                        [
+                            4
+                            8
+                            8
+                            8
+                            32
+                        ]
+                        elementWidth:
+                        [
+                            8
+                            8
+                            8
+                            8
+                            8
+                        ]
+                        dataWidth: 2048
+                    }
+                }
+                {
+                    HasIntlowToInthighConverter:
+                    {
+                        dataWidth: 4096
+                    }
+                    HasTransposer:
+                    {
+                        row:
+                        [
+                            4
+                            8
+                            8
+                            8
+                            32
+                        ]
+                        col:
+                        [
+                            32
+                            64
+                            64
+                            64
+                            8
+                        ]
+                        elementWidth:
+                        [
+                            8
+                            8
+                            8
+                            8
+                            8
+                        ]
+                        dataWidth: 4096
+                    }
+                }
+            ]
+            dynamicPriority: [0, 0]
+            higherStaticPriority: [0, 0]
         }
         data_reader_writer_params:
         {
@@ -398,7 +451,30 @@ Naming convention:
                     64
                 ]
             ]
+            datapath_extensions:
+            [
+                {}
+                {
+                    HasRescaleDownEfficientDynamic:
+                    {
+                        in_elementWidth: 32
+                        out_elementWidth: 8
+                        dataWidth: 1024
+                    }
+                    HasInt32ToFp16Converter:
+                    {
+                        dataWidth: 1024
+                    }
+                }
+            ]
+            dynamicPriority: [0, 0]
+            higherStaticPriority: [0, 0]
         }
-        snax_library_name: versacore
+        // NOTE: Every time when chaning the SUs, check the extra_loops_choice in the DataPathExtension files!
+        has_flexible_transpose: true,
+        has_int4toint8: true,
+        has_rescaledown_dynamic: true,
+        has_int32_to_fp16_converter: true,
+        snax_library_name: versacore-to
     }
 }

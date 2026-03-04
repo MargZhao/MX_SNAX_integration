@@ -6,7 +6,7 @@
 
 #include "data.h"
 
-#include "snax-versacore-lib.h"
+#include "snax-versacore-to-lib.h"
 
 // This test only test on the output stationary dataflow
 int main() {
@@ -79,7 +79,8 @@ int main() {
             set_addr_remap_index_C, channel_en_C,
 
             delta_local_d, D32slstride, D32tlbound, D32tlstride,
-            set_addr_remap_index_D32, channel_en_D);
+            set_addr_remap_index_D32, channel_en_D, array_shape, 0, 0, 0, 0, 0,
+            0, 0, 0);
 
         // Set GEMMX configuration CSR
         uint32_t subtraction_setting =
@@ -140,7 +141,8 @@ int main() {
             set_addr_remap_index_C, channel_en_C,
 
             delta_local_d, D32slstride, D32tlbound, D32tlstride,
-            set_addr_remap_index_D32, channel_en_D);
+            set_addr_remap_index_D32, channel_en_D, array_shape, 0, 0, 0, 0, 0,
+            0, 0, 0);
 
         // Set GEMMX configuration CSR
         if (stationary == 0) {
@@ -202,7 +204,8 @@ int main() {
             set_addr_remap_index_C, channel_en_C,
 
             delta_local_d, D32slstride, D32tlbound, D32tlstride,
-            set_addr_remap_index_D32, channel_en_D);
+            set_addr_remap_index_D32, channel_en_D, array_shape, 0, 0, 0, 0, 0,
+            0, 0, 0);
 
         if (stationary == 0) {
             // Set CSR for output-stationary
@@ -249,7 +252,8 @@ int main() {
             set_addr_remap_index_C, channel_en_C,
 
             delta_local_d, D32slstride, D32tlbound, D32tlstride,
-            set_addr_remap_index_D32, channel_en_D);
+            set_addr_remap_index_D32, channel_en_D, array_shape, 0, 0, 0, 0, 0,
+            0, 0, 0);
 
         if (stationary == 0) {
             // Set CSR for output-stationary
@@ -299,7 +303,8 @@ int main() {
             set_addr_remap_index_C, channel_en_C,
 
             delta_local_d, D32slstride, D32tlbound, D32tlstride,
-            set_addr_remap_index_D32, channel_en_D);
+            set_addr_remap_index_D32, channel_en_D, array_shape, 0, 0, 0, 0, 0,
+            0, 0, 0);
 
         // Set GEMMX configuration CSR
         if (stationary == 0) {

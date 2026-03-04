@@ -229,30 +229,50 @@ def block_gemm_golden_model_fp8(
 ):
     """
     Golden model for FP8 matrix multiplication with FP32 accumulation.
+
+    Matches hardware accumulation order exactly:
+      1. Within each K-slice: binary adder-tree reduction over tileSize
+         (mirrors the hardware adder tree).
+      2. Across K-slices: sequential FP32 add, starting from C
+         (mirrors the hardware C-feedback loop in input/weight-stationary mode).
     """
-    # Reshape inputs
-    A = A.astype(np.float32)
-    B = B.astype(np.float32)
-    C = C.astype(np.float32)
-    A = A.reshape(M, K, meshRow, tileSize)
-    B = B.reshape(N, K, meshCol, tileSize)
+    A = A.astype(np.float32).reshape(M, K, meshRow, tileSize)
+    B = B.astype(np.float32).reshape(N, K, meshCol, tileSize)
+    C = C.astype(np.float32).reshape(M, N, meshRow, meshCol)
 
     assert subtraction_a == 0
     assert subtraction_b == 0
 
-    # Initialize output
-    D = np.zeros((M, N, meshRow, meshCol), dtype=np.float32)
+    def adder_tree(arr):
+        """Binary tree reduction over a 1-D float32 array (mirrors hardware adder tree)."""
+        arr = arr.copy()
+        length = len(arr)
+        # Pad to next power-of-2 if necessary
+        import math
+        n = 1 << math.ceil(math.log2(length)) if length > 1 else 1
+        if n > length:
+            arr = np.append(arr, np.zeros(n - length, dtype=np.float32))
+        while len(arr) > 1:
+            arr = np.add(arr[0::2], arr[1::2])  # pairwise FP32 add
+        return arr[0]
 
-    # Perform matrix multiplication
+    # Initialize output from C (hardware feeds C as starting accumulator value)
+    D = C.copy()
+
+    # Accumulate K-slices sequentially, matching hardware's K-loop order
     for m in range(M):
         for n in range(N):
-            # FP8 multiplication with FP32 accumulation
-            D[m, n] = np.tensordot(A[m], B[n], axes=([0, 2], [0, 2]))
+            for k in range(K):
+                for r in range(meshRow):
+                    for c in range(meshCol):
+                        # FP8 products → FP32 (exact, no rounding needed for FP8×FP8)
+                        products = np.float32(A[m, k, r, :]) * np.float32(B[n, k, c, :])
+                        # Binary adder-tree reduction over tileSize
+                        tile_sum = adder_tree(products)
+                        # Sequential FP32 add to accumulator (C for k=0, prev D for k>0)
+                        D[m, n, r, c] = np.float32(D[m, n, r, c] + tile_sum)
 
-    # Add bias/subtraction and C matrix
-    D = D.reshape(M * N * meshRow * meshCol) + C
-
-    return D.flatten()
+    return D.reshape(M * N * meshRow * meshCol)
 
 
 # This function Performs a tiled block
@@ -697,3 +717,55 @@ def sumpool_golden(
                 sum_value = int(np.sum(kernel_region))
                 output[i // m_stride, j // n_stride, c] = sum_value
     return output
+
+
+def int32_to_fp16_golden(x: int) -> int:
+    """
+    Convert signed int32 to IEEE 754 half-precision (binary16).
+    Returns a 16-bit UNSIGNED integer (0..65535).
+    """
+    x = int(x)
+    # Handle signed → absolute value
+    sign = 1 if x < 0 else 0
+    abs_val = abs(x)  # Python ints are unbounded, this covers Int.MinValue case too
+
+    if abs_val == 0:
+        return sign << 15
+
+    # Find MSB index (equivalent to 63 - Long.numberOfLeadingZeros(abs))
+    msb_index = abs_val.bit_length() - 1
+
+    exp_unbiased = msb_index
+    exp_bias = 15
+    exp_raw = exp_unbiased + exp_bias
+
+    # Overflow → ±Inf
+    if exp_raw >= 31:
+        return (sign << 15) | (0x1F << 10)
+
+    # Normalize abs (shift so MSB goes to bit 31)
+    shift_amt = 31 - msb_index
+    mag_norm = (abs_val << shift_amt) & 0xFFFFFFFF
+
+    # Extract fraction + GRS
+    frac = (mag_norm >> 21) & 0x3FF
+    guard = ((mag_norm >> 20) & 1) != 0
+    round_bit = ((mag_norm >> 19) & 1) != 0
+    sticky = (mag_norm & ((1 << 19) - 1)) != 0
+    lsb = (frac & 1) != 0
+
+    increment = guard and (round_bit or sticky or lsb)
+
+    frac_rounded = frac + (1 if increment else 0)
+    exp_field = exp_raw
+
+    # Mantissa overflow
+    if frac_rounded == 1024:
+        frac_rounded = 0
+        exp_field += 1
+
+    # Overflow to Inf
+    if exp_field >= 31:
+        return (sign << 15) | (0x1F << 10)
+
+    return (sign << 15) | (exp_field << 10) | frac_rounded

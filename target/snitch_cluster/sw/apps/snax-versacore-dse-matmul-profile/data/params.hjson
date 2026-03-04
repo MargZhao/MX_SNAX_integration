@@ -1,0 +1,18 @@
+// Copyright 2025 KU Leuven.
+// Licensed under the Apache License, Version 2.0, see LICENSE for details.
+// SPDX-License-Identifier: Apache-2.0
+
+// Cluster configuration for a matmul testbench system.
+
+{
+    array_shape: 1
+    data_type: 0
+    K: 2
+    N: 1
+    M: 20
+    quantization_enable: 0
+    channel_en_C: 1
+    stationary: 2
+    transposed_A: 0
+    transposed_B: 0
+}
