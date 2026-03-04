@@ -1,0 +1,61 @@
+#include "snax-exercise-lib.h"
+#include "streamer_csr_addr_map.h"
+//-----------------------
+// Streamer 控制
+// 底层调用 csrw_ss (写 CSR) 和 csrr_ss (读 CSR)
+//-----------------------
+void configure_streamer_a(uint32_t base_ptr_low, uint32_t base_ptr_high,
+                          uint32_t spatial_stride, uint32_t temporal_bound, uint32_t temporal_stride) {
+    csrw_ss(BASE_PTR_READER_0_LOW, base_ptr_low);
+    csrw_ss(BASE_PTR_READER_0_HIGH, base_ptr_high);
+    csrw_ss(S_STRIDE_READER_0_0, spatial_stride);
+    csrw_ss(T_BOUND_READER_0_0, temporal_bound);
+    csrw_ss(T_STRIDE_READER_0_0, temporal_stride);
+    return;
+}
+
+void configure_streamer_b(uint32_t base_ptr_low, uint32_t base_ptr_high,
+                          uint32_t spatial_stride, uint32_t temporal_bound, uint32_t temporal_stride) {
+    csrw_ss(BASE_PTR_READER_1_LOW, base_ptr_low);
+    csrw_ss(BASE_PTR_READER_1_HIGH, base_ptr_high);
+    csrw_ss(S_STRIDE_READER_1_0, spatial_stride);
+    csrw_ss(T_BOUND_READER_1_0, temporal_bound);
+    csrw_ss(T_STRIDE_READER_1_0, temporal_stride);
+    return;
+}
+
+void configure_streamer_share(uint32_t base_ptr_low, uint32_t base_ptr_high,
+                          uint32_t spatial_stride, uint32_t temporal_bound, uint32_t temporal_stride) {
+    csrw_ss(BASE_PTR_READER_2_LOW, base_ptr_low);
+    csrw_ss(BASE_PTR_READER_2_HIGH, base_ptr_high);
+    csrw_ss(S_STRIDE_READER_2_0, spatial_stride);
+    csrw_ss(T_BOUND_READER_2_0, temporal_bound);
+    csrw_ss(T_STRIDE_READER_2_0, temporal_stride);
+    return;
+}
+
+void configure_streamer_o(uint32_t base_ptr_low, uint32_t base_ptr_high,
+                          uint32_t spatial_stride, uint32_t temporal_bound, uint32_t temporal_stride) {
+    csrw_ss(BASE_PTR_WRITER_0_LOW, base_ptr_low);
+    csrw_ss(BASE_PTR_WRITER_0_HIGH, base_ptr_high);
+    csrw_ss(S_STRIDE_WRITER_0_0, spatial_stride);
+    csrw_ss(T_BOUND_WRITER_0_0, temporal_bound);
+    csrw_ss(T_STRIDE_WRITER_0_0, temporal_stride);
+    return;
+}
+
+void start_streamer(void) { csrw_ss(STREAMER_START_CSR, 1); }
+uint32_t read_busy_streamer(void) { return csrr_ss(STREAMER_BUSY_CSR); }
+
+//-----------------------
+// Accelerator 专属控制
+//-----------------------
+void configure_mx(uint32_t mode, uint32_t acc_count, uint32_t out_count) {
+    csrw_ss(MX_CSR_MODE, mode);
+    csrw_ss(MX_CSR_ACC_COUNT, acc_count);
+    csrw_ss(MX_CSR_OUT_COUNT, out_count);
+}
+
+void start_mx(void) { csrw_ss(MX_CSR_START, 1); }
+uint32_t read_busy_mx(void) { return csrr_ss(MX_CSR_BUSY); }
+uint32_t read_perf_mx(void) { return csrr_ss(MX_CSR_PERF_COUNT); }

@@ -14,24 +14,26 @@ module snax_mx_shell_wrapper #(
   parameter int unsigned RegRWCount   = 3,
   parameter int unsigned RegROCount   = 2,
   //---------------Accelerator and streamer parameters-----------------------
-  parameter int unsigned TileRows     = 1,//parfor M
-  parameter int unsigned TileCols     = 1,//parfor N
+  parameter int unsigned TileRows     = 2,//parfor M
+  parameter int unsigned TileCols     = 2,//parfor N
   parameter int unsigned VectorSize   = 1,//parfor K // Accelerator parameters
   parameter int unsigned NumPE       = TileRows*TileCols,
   parameter int unsigned OutputDataWidth = 32,//TODO: FP32, later can be BF16
   parameter int unsigned InputDataWidth  = 8,
+  parameter int unsigned Portwidth =64,
+  parameter int unsigned InPortsNeeded = (InputDataWidth * NumPE + Portwidth - 1) / Portwidth,
+  parameter int unsigned OutPortsNeeded = (OutputDataWidth * NumPE + Portwidth - 1) / Portwidth,
   //TODO: change this later
-  // 4 A port 
-  parameter int unsigned StreamADataWidth = TileRows*VectorSize*InputDataWidth,
-  // 4 B port
-  parameter int unsigned StreamBDataWidth = TileCols*VectorSize*InputDataWidth,
+  // A port 
+  parameter int unsigned StreamADataWidth = InPortsNeeded*Portwidth,
+  // B port
+  parameter int unsigned StreamBDataWidth = InPortsNeeded*Portwidth,
   // 1 Shared exponent port
   parameter int unsigned StreamSharedExpDataWidth = 64,
   // 8 + 1 = 9
   // 8 output port, 1 output shared exponent port
-  parameter int unsigned StreamCDataWidth = 576,
+  parameter int unsigned StreamCDataWidth = OutPortsNeeded*Portwidth,
   //---------------Overall parameters-----------------------
-  parameter int unsigned DataWidth    = 64,
   parameter int unsigned RegDataWidth = 32,
   parameter int unsigned RegAddrWidth = 32
 )(
@@ -48,16 +50,16 @@ module snax_mx_shell_wrapper #(
   // just to comply with the top-level wrapper
 
   // Ports from accelerator to streamer
-  output logic [(NumPE*DataWidth)-1:0] acc2stream_0_data_o,
+  output logic [(StreamCDataWidth)-1:0] acc2stream_0_data_o,
   output logic acc2stream_0_valid_o,
   input  logic acc2stream_0_ready_i,
 
   // Ports from streamer to accelerator
-  input  logic [(NumPE*DataWidth)-1:0] stream2acc_0_data_i,
+  input  logic [(StreamADataWidth)-1:0] stream2acc_0_data_i,
   input  logic stream2acc_0_valid_i,
   output logic stream2acc_0_ready_o,
 
-  input  logic [(NumPE*DataWidth)-1:0] stream2acc_1_data_i,
+  input  logic [(StreamBDataWidth)-1:0] stream2acc_1_data_i,
   input  logic stream2acc_1_valid_i,
   output logic stream2acc_1_ready_o,
 
@@ -155,29 +157,25 @@ module snax_mx_shell_wrapper #(
   //-------------------------------
 
   // Wiring for accelerator ports
-  // logic [NumPE-1:0][DataWidth-1:0] a_split;
-  // logic [NumPE-1:0][DataWidth-1:0] b_split;
-  // logic [NumPE-1:0][DataWidth-1:0] c_split;
+  // TODO: Inputs, we have 8x8 MAC in total, for 1 mac it can do 1 INT8 op per cycle, or 4 FP8/FP6, or 8 FP4 ops per cycle. 
+  // logic [0:7][7:0] A_INT8;
+  // logic [0:7][7:0] B_INT8;
 
-   // Inputs, we have 8x8 MAC in total, for 1 mac it can do 1 INT8 op per cycle, or 4 FP8/FP6, or 8 FP4 ops per cycle. 
-  logic [0:7][7:0] A_INT8;
-  logic [0:7][7:0] B_INT8;
+  logic [0:TileRows-1][0:VectorSize-1][7:0] A_FP8;
+  logic [0:TileCols-1][0:VectorSize-1][7:0] B_FP8;
 
-  logic [0:7][0:3][7:0] A_FP8;
-  logic [0:7][0:3][7:0] B_FP8;
+  // logic [0:7][0:3][5:0] A_FP6;
+  // logic [0:7][0:3][5:0] B_FP6;
 
-  logic [0:7][0:3][5:0] A_FP6;
-  logic [0:7][0:3][5:0] B_FP6;
-
-  logic [0:7][0:7][3:0] A_FP4;
-  logic [0:7][0:7][3:0] B_FP4;
+  // logic [0:7][0:7][3:0] A_FP4;
+  // logic [0:7][0:7][3:0] B_FP4;
   
   //TODO: further split for NVFP4
   logic [7:0] shared_exp_A;
   logic [7:0] shared_exp_B;
   
    // Outputs
-  logic [0:7][0:7][7:0] Out;
+  logic [0:NumPE-1][OutputDataWidth-1:0] Out;
   logic [7:0] shared_exp_out;
 
   //-------------------------------
@@ -188,40 +186,56 @@ module snax_mx_shell_wrapper #(
     // ----------------------------------------------------------
     // Top-level loop over the 8 vector lanes
     // ----------------------------------------------------------
-    for (genvar i = 0; i < 8; i = i + 1) begin : gen_i_loop
-      //--------------------------------------------------------
-      // INT8 inputs (1 byte per element)
-      //--------------------------------------------------------
-      // A_INT8[7-0]  <= stream2acc_0_data_i[7:0]
-      // A_INT8[7-1] <= stream2acc_1_data_i[15:8]
-      assign A_INT8[8-1-i] = stream2acc_0_data_i[i*8+:8];
-      assign B_INT8[8-1-i] = stream2acc_1_data_i[i*8+:8];
-
-      //--------------------------------------------------------
-      // FP8 inputs (4 elements × 8 bits inside the 32-bit lane)
-      //--------------------------------------------------------
-      for (genvar j = 0; j < 4; j = j + 1) begin : gen_j_fp8_loop
-        assign A_FP8[8-1-i][4-1-j] = stream2acc_0_data_i[(i*32)+(j*8)+:8];
-        assign B_FP8[8-1-i][4-1-j] = stream2acc_1_data_i[(i*32)+(j*8)+:8];
-      end
-
-      //--------------------------------------------------------
-      // FP6 inputs (4 elements × 6 bits inside a 24-bit slice)
-      //--------------------------------------------------------
-      for (genvar j = 0; j < 4; j = j + 1) begin : gen_j_fp6_loop
-        assign A_FP6[8-1-i][4-1-j] = stream2acc_0_data_i[(i*24)+(j*6)+:6];
-        assign B_FP6[8-1-i][4-1-j] = stream2acc_1_data_i[(i*24)+(j*6)+:6];
-      end
-
-      //--------------------------------------------------------
-      // FP4 inputs (8 elements × 4 bits inside a 32-bit slice)
-      //--------------------------------------------------------
-      for (genvar  j = 0; j < 8; j = j + 1) begin : gen_j_fp4_loop
-        assign A_FP4[8-1-i][8-1-j] = stream2acc_0_data_i[(i*32)+(j*4)+:4];
-        assign B_FP4[8-1-i][8-1-j] = stream2acc_1_data_i[(i*32)+(j*4)+:4];
+    for (genvar i = 0; i < TileRows; i = i + 1) begin : gen_a_fp8_loop
+      for (genvar j = 0; j < VectorSize; j = j + 1) begin 
+      assign A_FP8[TileRows-1-i][VectorSize-1-j]= stream2acc_0_data_i[(i*8*VectorSize)+(j*8)+:8]; 
+      end   
+    end
+    for (genvar i = 0; i < TileCols; i = i + 1) begin : gen_b_fp8_loop
+      for (genvar j = 0; j < VectorSize; j = j + 1) begin 
+      assign B_FP8[TileCols-1-i][VectorSize-1-j] = stream2acc_1_data_i[(i*8*VectorSize)+(j*8)+:8];
       end
     end
   endgenerate
+  //  generate
+  //   // ----------------------------------------------------------
+  //   // Top-level loop over the 8 vector lanes
+  //   // ----------------------------------------------------------
+  //   for (genvar i = 0; i < 8; i = i + 1) begin : gen_i_loop
+  //     //--------------------------------------------------------
+  //     // INT8 inputs (1 byte per element)
+  //     //--------------------------------------------------------
+  //     // A_INT8[7-0]  <= stream2acc_0_data_i[7:0]
+  //     // A_INT8[7-1] <= stream2acc_1_data_i[15:8]
+  //     assign A_INT8[8-1-i] = stream2acc_0_data_i[i*8+:8];
+  //     assign B_INT8[8-1-i] = stream2acc_1_data_i[i*8+:8];
+
+  //     //--------------------------------------------------------
+  //     // FP8 inputs (4 elements × 8 bits inside the 32-bit lane)
+  //     //--------------------------------------------------------
+  //     for (genvar j = 0; j < 4; j = j + 1) begin : gen_j_fp8_loop
+  //       assign A_FP8[8-1-i][4-1-j] = stream2acc_0_data_i[(i*32)+(j*8)+:8];
+  //       assign B_FP8[8-1-i][4-1-j] = stream2acc_1_data_i[(i*32)+(j*8)+:8];
+  //     end
+
+  //     //--------------------------------------------------------
+  //     // FP6 inputs (4 elements × 6 bits inside a 24-bit slice)
+  //     //--------------------------------------------------------
+  //     for (genvar j = 0; j < 4; j = j + 1) begin : gen_j_fp6_loop
+  //       assign A_FP6[8-1-i][4-1-j] = stream2acc_0_data_i[(i*24)+(j*6)+:6];
+  //       assign B_FP6[8-1-i][4-1-j] = stream2acc_1_data_i[(i*24)+(j*6)+:6];
+  //     end
+
+  //     //--------------------------------------------------------
+  //     // FP4 inputs (8 elements × 4 bits inside a 32-bit slice)
+  //     //--------------------------------------------------------
+  //     for (genvar  j = 0; j < 8; j = j + 1) begin : gen_j_fp4_loop
+  //       assign A_FP4[8-1-i][8-1-j] = stream2acc_0_data_i[(i*32)+(j*4)+:4];
+  //       assign B_FP4[8-1-i][8-1-j] = stream2acc_1_data_i[(i*32)+(j*4)+:4];
+  //     end
+  //   end
+  // endgenerate
+
   // TODO: asymmetry
   
   //--------------------------------------------------------------
@@ -233,13 +247,23 @@ module snax_mx_shell_wrapper #(
   // Output data gathering
   always_comb begin
     acc2stream_0_data_o = '0;
-    for (int i = 0; i < 8; i++) begin
-      for (int j = 0; j < 8; j++) begin
-        acc2stream_0_data_o[(i*64)+(j*8)+:8] = Out[8-1-i][8-1-j];
+    for (int i = 0; i < TileRows; i++) begin
+      for (int j = 0; j < TileCols; j++) begin
+        acc2stream_0_data_o[(i*TileCols+j)*OutputDataWidth+:OutputDataWidth] = Out[TileRows-1-i][TileCols-1-j];
       end
     end
-    acc2stream_0_data_o[StreamCDataWidth-1-64+:8] = shared_exp_out;
+    //TODO: add logic when shared exponent output is neeeded
+    //acc2stream_0_data_o[StreamCDataWidth-1-64+:8] = shared_exp_out;
   end
+  // always_comb begin
+  //   acc2stream_0_data_o = '0;
+  //   for (int i = 0; i < 8; i++) begin
+  //     for (int j = 0; j < 8; j++) begin
+  //       acc2stream_0_data_o[(i*64)+(j*8)+:8] = Out[8-1-i][8-1-j];
+  //     end
+  //   end
+  //   acc2stream_0_data_o[StreamCDataWidth-1-64+:8] = shared_exp_out;
+  // end
 
   logic A_valid;
   logic B_valid;
@@ -252,7 +276,10 @@ module snax_mx_shell_wrapper #(
   gemm_engine_4way #(
     .SRC_WIDTH(InputDataWidth),
     .DST_WIDTH(OutputDataWidth),
-    SCALE_WIDTH(8),
+    .TileRows(TileRows),
+    .TileCols(TileCols),
+    .VectorSize(VectorSize),
+    .SCALE_WIDTH(8)
   )(
     //clk and rst
     .clk_i(clk_i),
@@ -294,7 +321,7 @@ module snax_mx_shell_wrapper #(
   // considering the back pressure signal from the streamer
   logic keep_output;
   logic next_cycle_keep_output;
-  // Keep output valid in the next cycle if streamer is ready
+  // when the streamer is not ready, Keep output valid in the next cycle until streamer is ready
   assign next_cycle_keep_output = acc2stream_0_valid_o && !acc2stream_0_ready_i;
   always_ff @(posedge clk_i or negedge rst_ni) begin : blockName
     if (rst_ni == 1'b0) begin
@@ -314,6 +341,7 @@ module snax_mx_shell_wrapper #(
 
   assign stream2acc_0_ready_o = all_input_valid && A_ready && acc_busy && !next_cycle_keep_output;
   assign stream2acc_1_ready_o = all_input_valid && B_ready && acc_busy && !next_cycle_keep_output;
+  //TODO: need to implement the logic to only update the shared exponent after a block
   assign stream2acc_2_ready_o = stream2acc_0_ready_o && stream2acc_1_ready_o;
 
   logic [31:0] accumulation_counter;

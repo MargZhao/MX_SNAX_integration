@@ -23,6 +23,9 @@
 module gemm_engine_4way #(
     parameter int unsigned SRC_WIDTH   = 8,
     parameter int unsigned DST_WIDTH   = 32,
+    parameter int unsigned TileRows    = 2,
+    parameter int unsigned TileCols    = 2,
+    parameter int unsigned VectorSize   = 1,
     parameter int unsigned SCALE_WIDTH = 8
 )(
     input  logic clk_i,
@@ -56,8 +59,8 @@ module gemm_engine_4way #(
     //input  logic [15:0] target_count_i, // How many steps to accumulate before 'done'
     
     // --- Data Interface (Quad-way SIMD) ---
-    input  logic [3:0][SRC_WIDTH-1:0] op_a_i, // 4 separate A operands
-    input  logic [3:0][SRC_WIDTH-1:0] op_b_i, // 4 separate B operands
+    input  logic [0:TileRows-1][SRC_WIDTH-1:0] op_a_i, // 2 separate A operands
+    input  logic [0:TileCols-1][SRC_WIDTH-1:0] op_b_i, // 2 separate B operands
     input  logic [SCALE_WIDTH-1:0]    shared_exp_A_i,
     input  logic [SCALE_WIDTH-1:0]    shared_exp_B_i,
     
@@ -98,27 +101,29 @@ module gemm_engine_4way #(
 
     //assign done_o = (acc_count_o == target_count_i) && !busy_o;
 
-    // --- Quad Unit Instantiation ---
+    // --- Array Instantiation ---
     generate
-        for (genvar i = 0; i < 4; i++) begin : gen_units
-            onedotproduct #(
-                .SRC_WIDTH(SRC_WIDTH),
-                .SCALE_WIDTH(SCALE_WIDTH),
-                .DST_WIDTH(DST_WIDTH)
-            ) u_dot (
-                .clk_i       (clk_i),
-                .rst_ni      (rst_ni),
-                .operands_a_i(op_a_i[i]),
-                .operands_b_i(op_b_i[i]),
-                .src_fmt_i   (mxfp8_pkg::E5M2),
-                .dst_fmt_i   (mxfp8_pkg::FP32),
-                .scale_i     (scale_i),
-                .a_valid_i   (internal_valid),
-                .b_valid_i   (internal_valid),
-                .init_save_i (acc_reset_i),
-                .done_o      (dot_done_bus[i]),
-                .result_o    (results_o[i])
-            );
+        for (genvar i = 0; i < TileRows; i++) begin : gen_units
+            for (genvar j = 0; j < TileCols; j++) begin
+                onedotproduct #(
+                    .SRC_WIDTH(SRC_WIDTH),
+                    .SCALE_WIDTH(SCALE_WIDTH),
+                    .DST_WIDTH(DST_WIDTH)
+                ) u_dot (
+                    .clk_i       (clk_i),
+                    .rst_ni      (rst_ni),
+                    .operands_a_i(op_a_i[i]),
+                    .operands_b_i(op_b_i[j]),
+                    .src_fmt_i   (mxfp8_pkg::E5M2),
+                    .dst_fmt_i   (mxfp8_pkg::FP32),
+                    .scale_i     (scale_i),
+                    .a_valid_i   (internal_valid),
+                    .b_valid_i   (internal_valid),
+                    .init_save_i (acc_reset_i),
+                    .done_o      (dot_done_bus[i]),
+                    .result_o    (results_o[i])
+                );
+            end
         end
     endgenerate
 
