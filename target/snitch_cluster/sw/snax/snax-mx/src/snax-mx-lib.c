@@ -1,4 +1,4 @@
-#include "snax-exercise-lib.h"
+#include "snax-mx-lib.h"
 #include "streamer_csr_addr_map.h"
 //-----------------------
 // Streamer 控制

@@ -5,8 +5,7 @@
 #include "snrt.h"
 
 #include "data.h"
-#include "snax-mx-lib.h"
-#include "streamer_csr_addr_map.h"
+#include "snax-mx-AIagent-lib.h"
 
 int main() {
     // Set err value for checking
@@ -14,13 +13,14 @@ int main() {
     printf("Starting SNAX Exercise Accelerator...\n");
 
     // Allocates space in TCDM
-    uint64_t *local_a, *local_b, *local_o, *local_shared;
+    // A, B, SHARED are uint8 data; output is uint32 (float32 results)
+    uint8_t  *local_a, *local_b, *local_shared;
+    uint32_t *local_o;
 
-    local_a = (uint64_t *)snrt_l1_next();
-    local_b = local_a + DATA_LEN;//jump 64 bit instead of 8
-    local_o = local_b + DATA_LEN;
-    //TODO: make it compatible this with the datagen.py
-    local_shared = local_o + OUT_LEN;
+    local_a      = (uint8_t  *)(snrt_l1_next() + delta_local_a);
+    local_b      = (uint8_t  *)(snrt_l1_next() + delta_local_b);
+    local_o      = (uint32_t *)(snrt_l1_next() + delta_local_o);
+    local_shared = (uint8_t  *)(snrt_l1_next() + delta_local_shared);
 
     // Start of pre-loading data from L2 memory
     // towards the L1 TCDM memory
@@ -34,93 +34,104 @@ int main() {
         // The DATA_LEN is found in data.h
         printf("Start DMA loading...\n");
         //TODO: make it compatible this with the low-bit precision data format
-        size_t vector_size = DATA_LEN * sizeof(uint64_t);
-        snrt_dma_start_1d(local_a, A, vector_size);
-        snrt_dma_start_1d(local_b, B, vector_size);
+        snrt_dma_start_1d(local_a,      A,      a_data_length);
+        //                addr_L1, addr_L2/3   , transfer size in bytes 
+        snrt_dma_start_1d(local_b,      B,      b_data_length);
         snrt_dma_start_1d(local_shared, SHARED, share_vector_size);
-
+        snrt_dma_wait_all();
         // Measure the end of the transfer process
-        uint32_t end_dma_load = snrt_mcycle();
+        //uint32_t end_dma_load = snrt_mcycle();
     }
 
     // Synchronize cores by setting up a
     // fence barrier for the DMA and accelerator core
     snrt_cluster_hw_barrier();
 
+    int32_t Aslstride[] = {Aslstride0};
+    int32_t Atlbound[] = {Atlbound0, Atlbound1, Atlbound2};
+    int32_t Atlstride[] = {Atlstride0, Atlstride1, Atlstride2};
+
+    int32_t Bslstride[] = {Bslstride0};
+    int32_t Btlbound[] = {Btlbound0, Btlbound1, Btlbound2};
+    int32_t Btlstride[] = {Btlstride0, Btlstride1, Btlstride2};
+
+    int32_t SHslstride[] = {SHslstride0};
+    int32_t SHtlbound[]  = {SHtlbound0, SHtlbound1, SHtlbound2};
+    int32_t SHtlstride[] = {SHtlstride0, SHtlstride1, SHtlstride2};
+
+    int32_t Oslstride[]  = {Oslstride0};
+    int32_t Otlbound[]   = {Otlbound0, Otlbound1,Otlbound2};
+    int32_t Otlstride[]  = {Otlstride0, Otlstride1, Otlstride2};
+
     // This assigns the tasks inside the condition
     // to the core controlling the accelerator
-    if (snrt_is_compute_core()) {
+    if (snrt_is_compute_core()) {// can also be snrt_global_core_idx() == 0
         // This marks the start of the
         // setting of CSRs for the accelerator
         uint32_t start_csr_setup = snrt_mcycle();
 
         // Configure streamer settings
-        // 参数: 低位地址, 高位地址, 空间跨度(8字节), 循环次数, 时间跨度(64字节)
-        //TODO: make it configurable in datagen.py
-        uint32_t spatial_stride = 1;
-        uint32_t temporal_stride = 4 * 1; // 每次吸入 8 个元素，步进 Num_element*byte_per_element 字节
-        uint32_t out_temporal_stride = 4 * 4;
-        //可以说 temporal_stride才是决定parfor数量的
-        configure_streamer_a((uint64_t)local_a, 0, spatial_stride, LOOP_ITER, temporal_stride);
-        
-        configure_streamer_b((uint64_t)local_b, 0, spatial_stride, LOOP_ITER, temporal_stride);
 
-       // how should i set this 
-        configure_streamer_share((uint64_t)local_shared, 0, 2, LOOP_ITER, ?);
+        //set_mx_streamer_csr
+        set_mx_streamer_csr(
+            delta_local_a,      Aslstride,  Atlbound,  Atlstride,
+            delta_local_b,      Bslstride,  Btlbound,  Btlstride,
+            delta_local_shared, SHslstride, SHtlbound, SHtlstride,
+            delta_local_o,      Oslstride,  Otlbound,  Otlstride);
 
-        configure_streamer_o((uint64_t)local_o, 0, spatial_stride, LOOP_ITER, out_temporal_stride);
-        printf("Streamer setup done...\n");
+        // // temporal_stride = 8: advance one 64-bit block (8 bytes) per temporal step
+        // // temporal_bound: per-reader iteration counts from data.h
+        // //TODO: when temporal_dim is raised to 3, add separate strides/bounds for each loop level
+        // configure_streamer_a(
+        //     (uint32_t)(uintptr_t)local_a, 0,
+        //     /*spatial_stride=*/1, A_LOOP_ITER, /*temporal_stride=*/8);
+
+        // configure_streamer_b(
+        //     (uint32_t)(uintptr_t)local_b, 0,
+        //     /*spatial_stride=*/1, B_LOOP_ITER, /*temporal_stride=*/8);
+
+        // // Share reader: one 64-bit block per k_block per output tile
+        // //   byte 0: exp_A[m0][k_b], byte 1: exp_A[m1][k_b]
+        // //   byte 2: exp_B[k_b][n0], byte 3: exp_B[k_b][n1], bytes 4-7: 0
+        // configure_streamer_share(
+        //     (uint32_t)(uintptr_t)local_shared, 0,
+        //     /*spatial_stride=*/1, SHARE_LOOP_ITER, /*temporal_stride=*/8);
+
+        // // Output writer: one beat per output tile (2 channels × 64-bit = 4 × uint32)
+        // configure_streamer_o(
+        //     (uint32_t)(uintptr_t)local_o, 0,
+        //     /*spatial_stride=*/1, OUT_LOOP_ITER, /*temporal_stride=*/8);
+        // printf("Streamer setup done...\n");
 
         // Configure ALU settings
-        configure_mx(MODE, ACC_CNT, OUT_CNT);
+        set_mx_csr(MODE, ACC_CNT, OUT_CNT);
         printf("CSR setup done...\n");
 
         // Start streamer then start ALU
-        start_streamer();
+        set_mx_streamer_start();
         printf("Streamer started...\n");
-        start_mx();
+        set_mx_start();
         printf("mx Exercise started...\n");
 
         // Mark the end of the CSR setup cycles
         uint32_t end_csr_setup = snrt_mcycle();
 
-        // Do this to poll the accelerator
-        while (read_busy_exercise()) {
-        };
-
-        printf("checkpoint 1\n");
-
-
-        // Do this to poll the streamer state
-        while (read_busy_streamer()) {
-        };
+        wait_mx_and_streamer();
 
         printf("checkpoint 2\n");
 
+        //TODO: change the checking method for mx
         // Compare results and check if the
         // accelerator returns correct answers
         // For every incorrect answer, increment err
-        for (uint32_t i = 0; i < OUT_LEN*2; i++) {
-            uint64_t expected = OUT[i];
-            uint64_t actual = *(local_o + i);
-            
+        for (uint32_t i = 0; i < OUT_LEN; i++) {
+            uint32_t expected = OUT[i];
+            uint32_t actual   = local_o[i];
+
             if (expected != actual) {
-                // 判断当前错的是低 64 位还是高 64 位
-                char* part = (i % 2 == 0) ? "Low" : "High";
-                
-                // 把 64 位的 expected 劈成高 32 位和低 32 位
-                uint32_t exp_hi = (uint32_t)(expected >> 32);
-                uint32_t exp_lo = (uint32_t)(expected & 0xFFFFFFFF);
-                
-                // 把 64 位的 actual 劈成高 32 位和低 32 位
-                uint32_t act_hi = (uint32_t)(actual >> 32);
-                uint32_t act_lo = (uint32_t)(actual & 0xFFFFFFFF);
-                
-                // 用 %08x 打印，不足 8 位补零，中间加个下划线方便看
-                printf("Mismatch at index %d [%s]: expected: 0x%08x_%08x, actual: 0x%08x_%08x\n", 
-                       i, part, 
-                       exp_hi, exp_lo,
-                       act_hi, act_lo);
+                // 用 %08x 打印，不足 8 位补零
+                printf("Mismatch at index %d: expected 0x%08x, actual 0x%08x\n",
+                       i, expected, actual);
                 err++;
             }
         }
@@ -128,7 +139,7 @@ int main() {
         // Read performance counter
         printf("======================================\n");
         printf("SNAX Exercise Accelerator Finished!\n");
-        printf("Hardware Cycles: %d \n", read_perf_exercise());
+        printf("Hardware Cycles: %d \n", read_perf_mx());
         if (err == 0) {
             printf(">>> SUCCESS! Golden model matched! <<<\n");
         } else {

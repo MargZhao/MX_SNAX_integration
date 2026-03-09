@@ -24,7 +24,7 @@ object StreamerParametersGen {
       spatialBounds = List(
         1
       ),
-      temporalDimension = 1,
+      temporalDimension = 3,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
@@ -32,13 +32,15 @@ object StreamerParametersGen {
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,
+      dynamicPriority = true,
+      higherStaticPriority = false,
       crossClockDomain = hasCrossClockDomain
    ), 
     new ReaderWriterParam(
       spatialBounds = List(
         1
       ),
-      temporalDimension = 1,
+      temporalDimension = 3,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
@@ -46,13 +48,15 @@ object StreamerParametersGen {
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,
+      dynamicPriority = true,
+      higherStaticPriority = false,
       crossClockDomain = hasCrossClockDomain
    ), 
     new ReaderWriterParam(
       spatialBounds = List(
         1
       ),
-      temporalDimension = 1,
+      temporalDimension = 3,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
@@ -60,6 +64,8 @@ object StreamerParametersGen {
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,
+      dynamicPriority = true,
+      higherStaticPriority = false,
       crossClockDomain = hasCrossClockDomain
     )
   )
@@ -69,7 +75,7 @@ object StreamerParametersGen {
       spatialBounds = List(
         2
       ),
-      temporalDimension = 1,
+      temporalDimension = 2,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
@@ -77,6 +83,8 @@ object StreamerParametersGen {
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,
+      dynamicPriority = true,
+      higherStaticPriority = false,
       crossClockDomain = hasCrossClockDomain
     )
   )
