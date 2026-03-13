@@ -1,0 +1,21 @@
+{
+    //array_shape: 1
+    //data_type: 0
+    K: 8
+    N: 8
+    M: 8
+    parfor_M: 8
+    parfor_N: 8
+    parfor_K: 1
+    block_size: 32
+    A_bit_width: 8
+    B_bit_width: 8
+    quantize_mode: 0
+    shared_format:0
+    stationary: 0
+    //quantization_enable: 0
+    //channel_en_C: 1
+    //stationary: 2
+    //transposed_A: 0
+    //transposed_B: 0
+}
