@@ -56,7 +56,7 @@ object StreamerParametersGen {
       spatialBounds = List(
         1
       ),
-      temporalDimension = 3,
+      temporalDimension = 4,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),

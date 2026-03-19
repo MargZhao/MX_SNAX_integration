@@ -61,15 +61,15 @@ module gemm_engine_4way #(
     // --- Data Interface (Quad-way SIMD) ---
     input  logic [0:TileRows-1][SRC_WIDTH-1:0] op_a_i, // 2 separate A operands
     input  logic [0:TileCols-1][SRC_WIDTH-1:0] op_b_i, // 2 separate B operands
-    input  logic [SCALE_WIDTH-1:0]    shared_exp_A_i,
-    input  logic [SCALE_WIDTH-1:0]    shared_exp_B_i,
+    input  logic [0:TileRows-1][SCALE_WIDTH-1:0]    shared_exp_A_i,
+    input  logic [0:TileCols-1][SCALE_WIDTH-1:0]    shared_exp_B_i,
     
     // --- Output Interface ---
-    output logic [3:0][DST_WIDTH-1:0] results_o
+    output logic [0:TileRows-1][0:TileCols-1][DST_WIDTH-1:0] results_o
 );
 
-    logic [3:0] dot_done_bus;
-    logic       internal_valid;
+    logic [0:TileRows-1][0:TileCols-1] dot_done_bus;
+    // logic       internal_valid;
 
     assign A_ready_o = ~send_output_i; 
     assign B_ready_o = ~send_output_i;
@@ -116,12 +116,13 @@ module gemm_engine_4way #(
                     .operands_b_i(op_b_i[j]),
                     .src_fmt_i   (mxfp8_pkg::E5M2),
                     .dst_fmt_i   (mxfp8_pkg::FP32),
-                    .scale_i     (scale_i),
-                    .a_valid_i   (internal_valid),
-                    .b_valid_i   (internal_valid),
+                    .scale_a_i     (shared_exp_A_i[i]),
+                    .scale_b_i   (shared_exp_B_i[j]),
+                    .a_valid_i   (A_valid_i),
+                    .b_valid_i   (B_valid_i),
                     .init_save_i (acc_reset_i),
-                    .done_o      (dot_done_bus[i]),
-                    .result_o    (results_o[i])
+                    .done_o      (dot_done_bus[i][j]),
+                    .result_o    (results_o[i][j])
                 );
             end
         end

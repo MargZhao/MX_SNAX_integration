@@ -56,7 +56,7 @@ INCDIRS += $(ROOT)/target/snitch_cluster/sw/runtime/$(RUNTIME_DIR)/include
 ## Outputs #
 ############
 
-OBJS        = $(BUILDDIR)/snax-mx-AIagent-lib.o
+OBJS        = $(BUILDDIR)/snax-mx-gemm-lib.o
 ALL_OUTPUTS = $(OBJS)
 
 

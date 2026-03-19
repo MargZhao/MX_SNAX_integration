@@ -1,11 +1,11 @@
 {
     //array_shape: 1
     //data_type: 0
-    K: 8
+    K: 32
     N: 8
     M: 8
-    parfor_M: 8
-    parfor_N: 8
+    parfor_M: 2
+    parfor_N: 2
     parfor_K: 1
     block_size: 32
     A_bit_width: 8

@@ -28,9 +28,9 @@ package mxfp8_pkg;
 
     // Encodings for supported FP formats， mind the order!
     localparam fp_encoding_t [0:NUM_FP_FORMATS-1] FP_ENCODINGS = '{
-    fp_encoding_t'( '{5, 2}  ),  // E5M2, index 0
-    fp_encoding_t'( '{4, 3}  ),  // E4M3
-    fp_encoding_t'( '{8, 23} )   // FP32
+    '{exp_bits: 5, man_bits:  2},  // E5M2, index 0
+    '{exp_bits: 4, man_bits:  3},  // E4M3
+    '{exp_bits: 8, man_bits: 23}   // FP32
     };
 
     typedef logic [0:NUM_FP_FORMATS-1]       fmt_logic_t;

@@ -48,7 +48,6 @@ def zero_padding(matrix_unpadded, pad_num):
 
 def data_file_emit(**kwargs):
     data_str = []
-
     #######################################################
     ############      workload params        ##############
     #######################################################
@@ -65,17 +64,12 @@ def data_file_emit(**kwargs):
     parfor_K = kwargs["parfor_K"]
     block_size = kwargs["block_size"]
     quantize_mode = kwargs["quantize_mode"]
+    
 
     data_str += [format_scalar_definition("uint32_t", "PARFOR_M", parfor_M)]
     data_str += [format_scalar_definition("uint32_t", "PARFOR_N", parfor_N)]
     data_str += [format_scalar_definition("uint32_t", "PARFOR_K", parfor_K)]
     data_str += [format_scalar_definition("uint32_t", "BLOCK_SIZE", block_size)]#note that quantize mode is in it
-
-    acc_cnt = np.ceil(K / parfor_K) #ceil if K cannot be divided by parfor_K
-    out_cnt = np.ceil(M / parfor_M) * (N / parfor_N)
-    data_str += [format_scalar_definition("uint32_t", "ACC_CNT", int(acc_cnt))]
-    data_str += [format_scalar_definition("uint32_t", "OUT_CNT", int(out_cnt))]
-
     #######################################################
     ###################data generation#####################
     #######################################################
@@ -87,14 +81,25 @@ def data_file_emit(**kwargs):
     n_padded = ceil(N / parfor_N) * parfor_N
     # K 维度 padding 到 block_size 的整数倍，方便后续按 block_size 划分 k-blocks 和生成 shared exponent
     k_padded = ceil(K / parfor_K) * parfor_K
-    K_padded = ceil(k_padded / block_size) * block_size# padding k to block_size的整数倍
-    A_fp32_padded = np.zeros((m_padded, k_padded), dtype=np.float32)
-    B_fp32_padded = np.zeros((k_padded, n_padded), dtype=np.float32)
+    k_aligned_blocksize = ceil(k_padded / block_size) * block_size# padding k to block_size的整数倍
+    A_fp32_padded = np.zeros((m_padded, k_aligned_blocksize), dtype=np.float32)
+    B_fp32_padded = np.zeros((k_aligned_blocksize, n_padded), dtype=np.float32)
     A_fp32_padded[:M, :K] = A_fp32
     B_fp32_padded[:K, :N] = B_fp32  
     
     A_quantized, exp_A, A_input = quantize.quantize_mx(A_fp32_padded, 'fp8_e5m2', block_size=block_size, axis=1)
     B_quantized, exp_B, B_input = quantize.quantize_mx(B_fp32_padded, 'fp8_e5m2', block_size=block_size, axis=0)
+
+    #######################################################
+    ################### CSR  settings #####################
+    #######################################################
+
+    acc_cnt = np.ceil(k_aligned_blocksize / parfor_K) #ceil if K cannot be divided by parfor_K
+    out_cnt = np.ceil(M / parfor_M) * np.ceil(N / parfor_N)
+    data_str += [format_scalar_definition("uint32_t", "ACC_CNT", int(acc_cnt))]
+    data_str += [format_scalar_definition("uint32_t", "OUT_CNT", int(out_cnt))]
+    #TODO: add real config for mode
+    data_str += [format_scalar_definition("uint32_t", "MODE", int(0))]
 
     #######################################################
     #####################streamer params###################
@@ -125,37 +130,39 @@ def data_file_emit(**kwargs):
     #-------------derived loop counts----------------
     m_tiles         = ceil(m_padded / parfor_M)
     n_tiles         = ceil(n_padded / parfor_N)
-    k_tiles         = ceil(k_padded / parfor_K)
+    k_tiles         = ceil(k_aligned_blocksize / parfor_K)
     k_blocks        = ceil(k_padded / block_size)
     bits_per_byte   = 8
+    bank_bytes      = bankwidth // bits_per_byte  # = 8
 
     #-------------Streamer A (element data)----------------
-    data_str += [format_scalar_definition("int32_t", "Aslstride0", bankwidth / bits_per_byte)]
+    data_str += [format_scalar_definition("int32_t", "Aslstride0", bank_bytes)]
 
-    A_tile_bytes = parfor_M * parfor_K * a_bitwidth / bits_per_byte
+    A_tile_bytes         = parfor_M * parfor_K * a_bitwidth / bits_per_byte
+    A_tile_bytes_aligned = int(ceil(A_tile_bytes / bank_bytes) * bank_bytes)#align with bankwidth
 
     #0 is the inner most loop
     if stationary == output_stationary:
         Atlbound0  = k_tiles;  # K
-        Atlstride0 = A_tile_bytes
-        Atlbound1  = n_tiles;  # N 
+        Atlstride0 = A_tile_bytes_aligned
+        Atlbound1  = n_tiles;  # N
         Atlstride1 = 0
         Atlbound2  = m_tiles;  # M outest
-        Atlstride2 = k_tiles * A_tile_bytes
+        Atlstride2 = k_tiles * A_tile_bytes_aligned
     elif stationary == weight_stationary:
         Atlbound0  = m_tiles;  #first move in M dimension
-        Atlstride0 = k_tiles * A_tile_bytes
-        Atlbound1  = n_tiles;   
+        Atlstride0 = k_tiles * A_tile_bytes_aligned
+        Atlbound1  = n_tiles;
         Atlstride1 = 0
-        Atlbound2  = k_tiles;   
-        Atlstride2 = A_tile_bytes
+        Atlbound2  = k_tiles;
+        Atlstride2 = A_tile_bytes_aligned
     elif stationary == input_stationary:
-        Atlbound0  = n_tiles;  #first move in N dimension 
+        Atlbound0  = n_tiles;  #first move in N dimension
         Atlstride0 = 0
-        Atlbound1  = m_tiles;   
-        Atlstride1 = k_tiles * A_tile_bytes
-        Atlbound2  = k_tiles;   
-        Atlstride2 = A_tile_bytes
+        Atlbound1  = m_tiles;
+        Atlstride1 = k_tiles * A_tile_bytes_aligned
+        Atlbound2  = k_tiles;
+        Atlstride2 = A_tile_bytes_aligned
 
     data_str += [format_scalar_definition("int32_t", "Atlbound0",  Atlbound0)]
     data_str += [format_scalar_definition("int32_t", "Atlstride0", Atlstride0)]
@@ -165,31 +172,32 @@ def data_file_emit(**kwargs):
     data_str += [format_scalar_definition("int32_t", "Atlstride2", Atlstride2)]
 
     #-------------Streamer B (element data)----------------
-    data_str += [format_scalar_definition("int32_t", "Bslstride0", bankwidth / bits_per_byte)]
+    data_str += [format_scalar_definition("int32_t", "Bslstride0", bank_bytes)]
 
-    B_tile_bytes = parfor_K * parfor_N * b_bitwidth / bits_per_byte
+    B_tile_bytes         = parfor_K * parfor_N * b_bitwidth / bits_per_byte
+    B_tile_bytes_aligned = int(ceil(B_tile_bytes / bank_bytes) * bank_bytes)
 
     if stationary == output_stationary:
-        Btlbound0  = k_tiles;   
-        Btlstride0 = B_tile_bytes
-        Btlbound1  = n_tiles;   
-        Btlstride1 = k_tiles * B_tile_bytes
-        Btlbound2  = m_tiles;   
+        Btlbound0  = k_tiles;
+        Btlstride0 = B_tile_bytes_aligned
+        Btlbound1  = n_tiles;
+        Btlstride1 = k_tiles * B_tile_bytes_aligned
+        Btlbound2  = m_tiles;
         Btlstride2 = 0
     elif stationary == weight_stationary:
-        Btlbound0  = m_tiles;   
+        Btlbound0  = m_tiles;
         Btlstride0 = 0
-        Btlbound1  = n_tiles;   
-        Btlstride1 = k_tiles * B_tile_bytes
-        Btlbound2  = k_tiles;   
-        Btlstride2 = B_tile_bytes
+        Btlbound1  = n_tiles;
+        Btlstride1 = k_tiles * B_tile_bytes_aligned
+        Btlbound2  = k_tiles;
+        Btlstride2 = B_tile_bytes_aligned
     elif stationary == input_stationary:
-        Btlbound0  = n_tiles;   
-        Btlstride0 = k_tiles * B_tile_bytes
-        Btlbound1  = m_tiles;   
+        Btlbound0  = n_tiles;
+        Btlstride0 = k_tiles * B_tile_bytes_aligned
+        Btlbound1  = m_tiles;
         Btlstride1 = 0
-        Btlbound2  = k_tiles;   
-        Btlstride2 = B_tile_bytes
+        Btlbound2  = k_tiles;
+        Btlstride2 = B_tile_bytes_aligned
 
     data_str += [format_scalar_definition("int32_t", "Btlbound0",  Btlbound0)]
     data_str += [format_scalar_definition("int32_t", "Btlstride0", Btlstride0)]
@@ -207,7 +215,7 @@ def data_file_emit(**kwargs):
 
     # (parfor_M + parfor_N) bytes per update
     combined_raw  = parfor_M + parfor_N
-    # round up to bankwidth boundary
+    # round up to bankwidth boundary, for example: ceil(4+4/8)*8 = 8 bytes
     combined_tile = int(ceil(combined_raw / (bankwidth / bits_per_byte)) * (bankwidth / bits_per_byte))
     pad           = combined_tile - combined_raw
 
@@ -228,6 +236,8 @@ def data_file_emit(**kwargs):
         SHtlbound2  = n_tiles;           SHtlstride2 = k_blocks * combined_tile
         SHtlbound3  = m_tiles;           SHtlstride3 = n_tiles * k_blocks * combined_tile
 
+    assert steps_per_block*k_blocks==k_tiles
+
     data_str += [format_scalar_definition("int32_t", "SHtlbound0",  SHtlbound0)]
     data_str += [format_scalar_definition("int32_t", "SHtlstride0", SHtlstride0)]
     data_str += [format_scalar_definition("int32_t", "SHtlbound1",  SHtlbound1)]
@@ -244,12 +254,14 @@ def data_file_emit(**kwargs):
     O_tile_bytes = parfor_M * parfor_N * o_bitwidth / bits_per_byte
 
     if stationary == output_stationary:
-        Otlbound0  = k_tiles;   
-        Otlstride0 = 0
-        Otlbound1  = n_tiles;   
-        Otlstride1 = O_tile_bytes
-        Otlbound2  = m_tiles;   
-        Otlstride2 = n_tiles * O_tile_bytes
+        # Otlbound0  = k_tiles;   
+        # Otlstride0 = 0
+        # Otlbound1  = n_tiles;   
+        # Otlstride1 = O_tile_bytes
+        # Otlbound2  = m_tiles;   
+        # Otlstride2 = n_tiles * O_tile_bytes
+        Otlbound0  = n_tiles;   Otlstride0 = O_tile_bytes
+        Otlbound1  = m_tiles;   Otlstride1 = n_tiles * O_tile_bytes
     elif stationary == weight_stationary:
         Otlbound0  = m_tiles;   
         Otlstride0 = 0
@@ -269,8 +281,8 @@ def data_file_emit(**kwargs):
     data_str += [format_scalar_definition("int32_t", "Otlstride0", Otlstride0)]
     data_str += [format_scalar_definition("int32_t", "Otlbound1",  Otlbound1)]
     data_str += [format_scalar_definition("int32_t", "Otlstride1", Otlstride1)]
-    data_str += [format_scalar_definition("int32_t", "Otlbound2",  Otlbound2)]
-    data_str += [format_scalar_definition("int32_t", "Otlstride2", Otlstride2)]
+    # data_str += [format_scalar_definition("int32_t", "Otlbound2",  Otlbound2)]
+    # data_str += [format_scalar_definition("int32_t", "Otlstride2", Otlstride2)]
 
 
     #-------------Share scale Out ( bank-aligned)----------------
@@ -283,41 +295,58 @@ def data_file_emit(**kwargs):
     def align_addr(addr, align):
         return int(ceil(addr / align) * align)
 
-    bank_bytes = bankwidth // bits_per_byte   # = 8
-
-    A_data_size     = m_padded * k_padded * a_bitwidth // bits_per_byte
-    B_data_size     = k_padded * n_padded * b_bitwidth // bits_per_byte
+    A_data_size     = m_tiles * k_tiles * A_tile_bytes_aligned
+    B_data_size     = k_tiles * n_tiles * B_tile_bytes_aligned
     scale_data_size = m_tiles * n_tiles * k_blocks * combined_tile
-    D_data_size     = m_padded * n_padded * o_bitwidth // bits_per_byte
+    O_data_size     = m_padded * n_padded * o_bitwidth // bits_per_byte
+
+    data_str += [format_scalar_definition("int32_t", "A_data_size",     A_data_size)]
+    data_str += [format_scalar_definition("int32_t", "B_data_size",     B_data_size)]
+    data_str += [format_scalar_definition("int32_t", "scale_data_size", scale_data_size)]
+    data_str += [format_scalar_definition("int32_t", "O_data_size",     O_data_size)]
 
     delta_local_a     = 0
     delta_local_b     = align_addr(delta_local_a + A_data_size, bank_bytes)
     delta_local_scale = align_addr(delta_local_b + B_data_size, bank_bytes)
-    delta_local_d     = align_addr(delta_local_scale + scale_data_size, bank_bytes)
+    delta_local_o     = align_addr(delta_local_scale + scale_data_size, bank_bytes)
 
     data_str += [format_scalar_definition("int32_t", "delta_local_a",     delta_local_a)]
     data_str += [format_scalar_definition("int32_t", "delta_local_b",     delta_local_b)]
     data_str += [format_scalar_definition("int32_t", "delta_local_scale", delta_local_scale)]
-    data_str += [format_scalar_definition("int32_t", "delta_local_d",     delta_local_d)]
+    data_str += [format_scalar_definition("int32_t", "delta_local_o",     delta_local_o)]
 
     #######################################################
     ##################### data arrays #####################
     #######################################################
 
-    # ---- A: tile reorder (m_tiles, k_tiles, parfor_M, parfor_K) ----
-    A_tiled = (A_input
-               .reshape(m_tiles, parfor_M, k_tiles, parfor_K) # goes to(0:m_tiles, 2:k_tiles, 1:parfor_M, 3:parfor_K)
-               .transpose(0, 2, 1, 3)
-               .flatten()
-               .view(np.int8))
+    # ---- A: tile reorder (m_tiles, k_tiles, parfor_M, parfor_K), pad to bank boundary ----
+    A_tile_pad   = int(A_tile_bytes_aligned - A_tile_bytes)
+    A_transposed = (A_input
+                    .reshape(m_tiles, parfor_M, k_tiles, parfor_K)
+                    .transpose(0, 2, 1, 3)
+                    .reshape(m_tiles * k_tiles, int(A_tile_bytes)))
+    if A_tile_pad > 0:
+        A_tiled = np.concatenate([
+            A_transposed,
+            np.zeros((m_tiles * k_tiles, A_tile_pad), dtype=np.uint8)
+        ], axis=1).flatten().view(np.int8)
+    else:
+        A_tiled = A_transposed.flatten().view(np.int8)
     data_str += [format_vector_definition("int8_t", "A", A_tiled)]
 
-    # ---- B: tile reorder (k_tiles, n_tiles, parfor_K, parfor_N) ----
-    B_tiled = (B_input
-               .reshape(k_tiles, parfor_K, n_tiles, parfor_N)
-               .transpose(0, 2, 1, 3)
-               .flatten()
-               .view(np.int8))
+    # ---- B: tile reorder (k_tiles, n_tiles, parfor_K, parfor_N), pad to bank boundary ----
+    B_tile_pad   = int(B_tile_bytes_aligned - B_tile_bytes)
+    B_transposed = (B_input
+                    .reshape(k_tiles, parfor_K, n_tiles, parfor_N)
+                    .transpose(0, 2, 1, 3)
+                    .reshape(k_tiles * n_tiles, int(B_tile_bytes)))
+    if B_tile_pad > 0:
+        B_tiled = np.concatenate([
+            B_transposed,
+            np.zeros((k_tiles * n_tiles, B_tile_pad), dtype=np.uint8)
+        ], axis=1).flatten().view(np.int8)
+    else:
+        B_tiled = B_transposed.flatten().view(np.int8)
     data_str += [format_vector_definition("int8_t", "B", B_tiled)]
 
     # ---- Combined A+B scale (E8M0, biased by 127) ----
@@ -350,7 +379,7 @@ def data_file_emit(**kwargs):
                .reshape(m_tiles, parfor_M, n_tiles, parfor_N)
                .transpose(0, 2, 1, 3)
                .flatten())
-    data_str += [format_vector_definition("float", "D_golden", D_tiled)]
+    data_str += [format_vector_definition("uint32_t", "O_golden", D_tiled.view(np.uint32))]#need to store as uint32 to align with C library
     data_str = "\n\n".join(data_str)
     return data_str
 

@@ -117,7 +117,7 @@
             bender_target: ["snax_mx_alu"],
             snax_tcdm_ports: 5,//total number of ports of streamer
             sparse_interconnect_config: [[5, 1]],//TODO: ask
-            snax_num_rw_csr: 3,
+            snax_num_rw_csr: 4,
             snax_num_ro_csr: 2,
             snax_streamer_cfg: {$ref: "#/snax_mx_alu_streamer_template" }
         }],
@@ -210,7 +210,7 @@
 
         data_reader_params: {
             spatial_bounds: [[1], [1], [1]],//spatial unrolling factor for each data mover(parfor), in 64bit
-            temporal_dim: [3, 3, 3],//3 loop levels: outermost=tile(M or N), middle=reuse(stride=0), innermost=k_beat/k_block
+            temporal_dim: [3, 3, 4],//3 loop levels: outermost=tile(M or N), middle=reuse(stride=0), innermost=k_beat/k_block
             //TODO: specify it with diff input format
             num_channel: [1, 1, 1],//one 64-bit TCDM port per reader
             fifo_depth: [8, 8, 8],

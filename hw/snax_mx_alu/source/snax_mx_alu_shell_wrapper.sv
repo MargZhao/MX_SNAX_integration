@@ -7,11 +7,11 @@
 //-------------------------------
 // Accelerator wrapper
 //-------------------------------
-module snax_mx_shell_wrapper #(
+module snax_mx_alu_shell_wrapper #(
   // Custom parameters. As much as possible,
   // these parameters should not be taken from outside
   //---------------CSR manager parameters-----------------------
-  parameter int unsigned RegRWCount   = 3,
+  parameter int unsigned RegRWCount   = 4,
   parameter int unsigned RegROCount   = 2,
   //---------------Accelerator and streamer parameters-----------------------
   parameter int unsigned TileRows     = 2,//parfor M
@@ -133,7 +133,7 @@ module snax_mx_shell_wrapper #(
   end
 
   logic compute_finish;//when output_fire_counter reaches the preset output count, the computation is finished
-  assign compute_finish = (output_fire_counter == csr_reg_set_buffer[2]);
+  assign compute_finish = (output_fire_counter == csr_reg_set_buffer[2]-1);
 
   always_comb begin
     next_state = current_state;
@@ -171,11 +171,11 @@ module snax_mx_shell_wrapper #(
   // logic [0:7][0:7][3:0] B_FP4;
   
   //TODO: further split for NVFP4
-  logic [7:0] shared_exp_A;
-  logic [7:0] shared_exp_B;
+  logic [0:TileRows-1][7:0] shared_exp_A;
+  logic [0:TileCols-1][7:0] shared_exp_B;
   
    // Outputs
-  logic [0:NumPE-1][OutputDataWidth-1:0] Out;
+  logic [0:TileRows-1][0:TileCols-1][OutputDataWidth-1:0] Out;
   logic [7:0] shared_exp_out;
 
   //-------------------------------
@@ -241,8 +241,10 @@ module snax_mx_shell_wrapper #(
   //--------------------------------------------------------------
   // Shared default exponents
   //--------------------------------------------------------------
-  assign shared_exp_A = stream2acc_2_data_i[7 : 0];
-  assign shared_exp_B = stream2acc_2_data_i[15 : 8];
+  localparam A_SHARE_WIDTH = TileRows * 8;
+  localparam B_SHARE_WIDTH = TileCols * 8;
+  assign shared_exp_A = stream2acc_2_data_i[0             +: A_SHARE_WIDTH];
+  assign shared_exp_B = stream2acc_2_data_i[A_SHARE_WIDTH +: B_SHARE_WIDTH];
 
   // Output data gathering
   always_comb begin
@@ -280,7 +282,7 @@ module snax_mx_shell_wrapper #(
     .TileCols(TileCols),
     .VectorSize(VectorSize),
     .SCALE_WIDTH(8)
-  )(
+  ) u_gemm_engine (
     //clk and rst
     .clk_i(clk_i),
     .rst_ni(rst_ni),
@@ -292,24 +294,24 @@ module snax_mx_shell_wrapper #(
     //.prec_mode_quan(csr_reg_set_buffer[0][9:8]),  // Precision mode for quantization of result
     .Result_mode_quan  (csr_reg_set_buffer[0][11:10]),  // FP mode for quantization
     .group_size(csr_reg_set_buffer[0][15:14]), 
-    .shared_format(csr_reg_set_buffer[0][19:16]),// ExMy format  
+    .shared_format_i(csr_reg_set_buffer[0][19:16]),// ExMy format  
     // Data Inputs/outputs
-    .op_a_i(A_INT8),
-    .op_b_i(B_INT8),
+    .op_a_i(A_FP8),
+    .op_b_i(B_FP8),
     .shared_exp_A_i(shared_exp_A),
     .shared_exp_B_i(shared_exp_B),
-    .C_o(Out),
-    .shared_exp_out_o(shared_exp_out)
+    .results_o(Out),
+    //TODO: .shared_exp_out_o(shared_exp_out),
     // Control signal for in/out
     .acc_reset_i(reset_acc),// when send_output is 1, the PE will save the output result and prepare for next accumulation, otherwise it will keep accumulating
     .send_output_i(send_output),// to indicate when to send out the output, this is determined by the accumulation count and the preset count in CSR
     .A_valid_i(A_valid),//good to go if all input are valid
     .A_ready_o(A_ready),
     .B_valid_i(B_valid),
-    .B_ready_o(B_ready),
+    .B_ready_o(B_ready)
     //.Res_valid_o  (O_valid),
     //.Res_ready_i  (O_ready)
-  )
+  );
   
 
   // -----------------------------------------------------------
@@ -345,7 +347,7 @@ module snax_mx_shell_wrapper #(
   assign stream2acc_2_ready_o = stream2acc_0_ready_o && stream2acc_1_ready_o;
 
   logic [31:0] accumulation_counter;
-  logic
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (rst_ni == 1'b0) begin
       accumulation_counter <= 32'b0;  // Reset counter

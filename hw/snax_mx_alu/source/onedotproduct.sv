@@ -32,7 +32,8 @@ module onedotproduct#(
     input logic [SRC_WIDTH-1:0] operands_b_i,
     input mxfp8_pkg::fp_format_e    src_fmt_i,
     input mxfp8_pkg::fp_format_e    dst_fmt_i,
-    input logic [1:0][SCALE_WIDTH-1:0] scale_i,
+    input logic [SCALE_WIDTH-1:0] scale_a_i,
+    input logic [SCALE_WIDTH-1:0] scale_b_i,
 
     /////control signal/////
     input logic a_valid_i,
@@ -120,7 +121,7 @@ module onedotproduct#(
     logic signed [SCALE_WIDTH:0] scale_add;
     logic signed [SCALE_WIDTH:0] scale_exp;
     always_comb begin
-        scale_add = signed'(scale_i[0]-127) + signed'(scale_i[1]-127);
+        scale_add = signed'(scale_a_i-127) + signed'(scale_b_i-127);
         scale_exp = signed'(scale_add) + signed'(exp_sum_w);
     end
 
@@ -170,9 +171,9 @@ module onedotproduct#(
         .a_exp(scale_exp),
         .a_man(gated_sum_man), 
         .acc_sgn(feedback_sgn),
-        .acc_sgn(feedback_exp), 
+        .acc_exp(feedback_exp), 
         .acc_man_with_hidden(feedback_man), 
-        .acc_man_with_hidden(feedback_valid),
+        //.acc_valid(feedback_valid),
         .out_sgn(acc_sgn), 
         .out_exp(acc_exp), 
         .out_man(acc_man)
@@ -320,7 +321,7 @@ module fp32_accumulator#(
     
 
     always_comb begin
-        exp_diff = signed'(a_exp) - signed'({acc_sgn[EXP_WIDTH-1],acc_sgn});
+        exp_diff = signed'(a_exp) - acc_exp;
         if (acc_man_with_hidden) begin
             exp_large      = a_exp;
             mant_a_shifted = a_man;
@@ -331,7 +332,7 @@ module fp32_accumulator#(
             mant_a_shifted = a_man;//20 = 8 + 12
             mant_b_shifted = {1'b0, b_man_full,{(ACC_WIDTH-DST_MAN_WIDTH-1){1'b0}}} >> exp_diff;
         end else begin
-            exp_large      = acc_sgn;
+            exp_large      = acc_exp;
             mant_a_shifted = a_man >> (-exp_diff);
             mant_b_shifted = {1'b0,b_man_full,{(ACC_WIDTH-DST_MAN_WIDTH-1){1'b0}}};
         end

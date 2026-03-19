@@ -30,6 +30,9 @@ endif
 ifeq (${CFG_OVERRIDE}, cfg/snax_exercise_cluster.hjson)
 SUBDIRS += snax-exercise
 endif
+ifeq (${CFG_OVERRIDE}, cfg/snax_mx_cluster.hjson)
+SUBDIRS += snax-mx
+endif
 ifeq ($(CFG_OVERRIDE), cfg/snax_multi_alu_cluster.hjson)
 SUBDIRS += snax-alu
 SUBDIRS += snax-multi-alu

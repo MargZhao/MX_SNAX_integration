@@ -7,10 +7,10 @@
 APP = snax-mx
 
 INCDIRS = data \
-          ../../snax/snax-mx-gemm/include
+          ../../snax/snax-mx/include
 
 # Include this binary in the final build
-RISCV_LDFLAGS += ../../snax/snax-mx-gemm/build/snax-mx-gemm-lib.o
+RISCV_LDFLAGS += ../../snax/snax-mx/build/snax-mx-lib.o
 
 SRCS = src/snax-mx.c
 
