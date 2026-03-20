@@ -144,16 +144,56 @@ uint32_t read_mx_perf_counter() {
     return csrr_ss(MX_CSR_PERF_COUNT);
 }
 
+// Print an IEEE-754 FP32 value using only integer arithmetic,
+// avoiding float variables in variadic calls (which emit FMV.W.X on Snitch).
+static void snax_print_f32(uint32_t bits) {
+    int sign   = (bits >> 31) & 1;
+    int biased = (bits >> 23) & 0xFF;
+    uint32_t frac = bits & 0x7FFFFFu;
+
+    if (biased == 0xFF) {
+        if (frac) { printf("NaN"); return; }
+        printf(sign ? "-Inf" : "Inf"); return;
+    }
+    if (sign) printf("-");
+    if (biased == 0 && frac == 0) { printf("0.000000"); return; }
+
+    // sig * 2^e = |value|, sig is the 24-bit (or 23-bit denorm) significand
+    uint64_t sig = biased ? ((uint64_t)1 << 23 | frac) : (uint64_t)frac;
+    int e = biased ? (biased - 127 - 23) : (-126 - 23);
+
+    uint64_t int_part, frac_part;
+    if (e >= 0) {
+        if (e > 30) { printf("large"); return; }
+        int_part  = sig << e;
+        frac_part = 0;
+    } else {
+        int ne = -e;
+        if (ne > 60) { printf("0.000000"); return; }
+        if (ne <= 23) {
+            int_part  = sig >> ne;
+            uint64_t rem = sig & (((uint64_t)1 << ne) - 1);
+            frac_part = (rem * 1000000ULL) >> ne;
+        } else {
+            int_part  = 0;
+            frac_part = (sig * 1000000ULL) >> ne;
+        }
+    }
+    printf("%u.%06u", (unsigned)int_part, (unsigned)frac_part);
+}
+
 // Check the result of MX accelerator output against golden model
 uint32_t check_mx_result(uint32_t* output, uint32_t* output_golden,
                          int32_t out_len) {
     uint32_t err = 0;
     for (int i = 0; i < out_len; i++) {
-        if (output[i] != output_golden[i]) {
-            err++;
-            printf("Mismatch at [%d]: expected 0x%08x, got 0x%08x\n",
-                   i, output_golden[i], output[i]);
-        }
+        int mismatch = (output[i] != output_golden[i]);
+        printf("[%d]: expected ", i);
+        snax_print_f32(output_golden[i]);
+        printf(" (0x%08x), got ", output_golden[i]);
+        snax_print_f32(output[i]);
+        printf(" (0x%08x)%s\n", output[i], mismatch ? " <-- MISMATCH" : "");
+        if (mismatch) err++;
     }
     return err;
 }

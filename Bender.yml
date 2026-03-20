@@ -313,8 +313,9 @@ sources:
     files:
       # Level 0
       - hw/snax_mx_alu/source/mxfp8_pkg.sv
-      - hw/snax_mx_alu/source/gemm_engine_4way.sv
-      - hw/snax_mx_alu/source/onedotproduct.sv
+      - hw/snax_mx_alu/source/PE_Array_wrapper.sv
+      - hw/snax_mx_alu/source/DotProductUnit_E5M2_x_E5M2_scale_UE8M0.sv
+      #- hw/snax_mx_alu/source/onedotproduct.sv
       - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_reqrspman_ReqRspManager.sv
       - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_Streamer.sv
       # Level 1

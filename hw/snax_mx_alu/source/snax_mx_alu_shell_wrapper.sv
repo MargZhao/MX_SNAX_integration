@@ -133,7 +133,7 @@ module snax_mx_alu_shell_wrapper #(
   end
 
   logic compute_finish;//when output_fire_counter reaches the preset output count, the computation is finished
-  assign compute_finish = (output_fire_counter == csr_reg_set_buffer[2]-1);
+  assign compute_finish = (output_fire_counter == csr_reg_set_buffer[2]);
 
   always_comb begin
     next_state = current_state;
@@ -188,12 +188,12 @@ module snax_mx_alu_shell_wrapper #(
     // ----------------------------------------------------------
     for (genvar i = 0; i < TileRows; i = i + 1) begin : gen_a_fp8_loop
       for (genvar j = 0; j < VectorSize; j = j + 1) begin 
-      assign A_FP8[TileRows-1-i][VectorSize-1-j]= stream2acc_0_data_i[(i*8*VectorSize)+(j*8)+:8]; 
+      assign A_FP8[i][j]= stream2acc_0_data_i[(i*8*VectorSize)+(j*8)+:8]; 
       end   
     end
     for (genvar i = 0; i < TileCols; i = i + 1) begin : gen_b_fp8_loop
       for (genvar j = 0; j < VectorSize; j = j + 1) begin 
-      assign B_FP8[TileCols-1-i][VectorSize-1-j] = stream2acc_1_data_i[(i*8*VectorSize)+(j*8)+:8];
+      assign B_FP8[i][j] = stream2acc_1_data_i[(i*8*VectorSize)+(j*8)+:8];
       end
     end
   endgenerate
@@ -243,15 +243,21 @@ module snax_mx_alu_shell_wrapper #(
   //--------------------------------------------------------------
   localparam A_SHARE_WIDTH = TileRows * 8;
   localparam B_SHARE_WIDTH = TileCols * 8;
-  assign shared_exp_A = stream2acc_2_data_i[0             +: A_SHARE_WIDTH];
-  assign shared_exp_B = stream2acc_2_data_i[A_SHARE_WIDTH +: B_SHARE_WIDTH];
+  generate
+    for (genvar i = 0; i < TileRows; i++) begin
+        assign shared_exp_A[i] = stream2acc_2_data_i[i*8 +: 8];
+    end
+    for (genvar i = 0; i < TileCols; i++) begin
+        assign shared_exp_B[i] = stream2acc_2_data_i[A_SHARE_WIDTH + i*8 +: 8];
+    end
+    endgenerate
 
   // Output data gathering
   always_comb begin
     acc2stream_0_data_o = '0;
     for (int i = 0; i < TileRows; i++) begin
       for (int j = 0; j < TileCols; j++) begin
-        acc2stream_0_data_o[(i*TileCols+j)*OutputDataWidth+:OutputDataWidth] = Out[TileRows-1-i][TileCols-1-j];
+        acc2stream_0_data_o[(i*TileCols+j)*OutputDataWidth+:OutputDataWidth] = Out[i][j];
       end
     end
     //TODO: add logic when shared exponent output is neeeded
@@ -275,7 +281,7 @@ module snax_mx_alu_shell_wrapper #(
 
   //TODO: check this part, create own PE wrapper
   // M_out_width is ony Mantissa width of output, so for FP32 should be 23 not 32
-  gemm_engine_4way #(
+  PE_Array_wrapper #(
     .SRC_WIDTH(InputDataWidth),
     .DST_WIDTH(OutputDataWidth),
     .TileRows(TileRows),
@@ -364,7 +370,8 @@ module snax_mx_alu_shell_wrapper #(
 
   //to reset the accumulation
   logic reset_acc;
-  assign reset_acc = (accumulation_counter == 32'b0);
+  // assign reset_acc = (accumulation_counter == 32'b0);
+  assign reset_acc = send_output;
 
   assign A_valid = computation_fire;
   assign B_valid = computation_fire;

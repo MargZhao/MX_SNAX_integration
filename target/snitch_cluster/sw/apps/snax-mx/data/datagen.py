@@ -77,6 +77,11 @@ def data_file_emit(**kwargs):
     variance = 1
     A_fp32 = (np.random.randn(M, K) * variance ).astype(np.float32)
     B_fp32 = (np.random.randn(K, N) * variance ).astype(np.float32)
+    # A_fp32 = np.tile(np.arange(1, K+1), (M, 1)).astype(np.float32)
+    # B_fp32 = np.tile(np.arange(1, N+1), (K, 1)).astype(np.float32)
+    # A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
+    # B_fp32 = np.eye(K, N, dtype=np.float32)
+    
     m_padded = ceil(M / parfor_M) * parfor_M
     n_padded = ceil(N / parfor_N) * parfor_N
     # K 维度 padding 到 block_size 的整数倍，方便后续按 block_size 划分 k-blocks 和生成 shared exponent
@@ -143,23 +148,23 @@ def data_file_emit(**kwargs):
 
     #0 is the inner most loop
     if stationary == output_stationary:
-        Atlbound0  = k_tiles;  # K
+        Atlbound0  = k_tiles  # K
         Atlstride0 = A_tile_bytes_aligned
-        Atlbound1  = n_tiles;  # N
+        Atlbound1  = n_tiles  # N
         Atlstride1 = 0
-        Atlbound2  = m_tiles;  # M outest
+        Atlbound2  = m_tiles # M outest
         Atlstride2 = k_tiles * A_tile_bytes_aligned
     elif stationary == weight_stationary:
-        Atlbound0  = m_tiles;  #first move in M dimension
+        Atlbound0  = m_tiles  #first move in M dimension
         Atlstride0 = k_tiles * A_tile_bytes_aligned
-        Atlbound1  = n_tiles;
+        Atlbound1  = n_tiles
         Atlstride1 = 0
-        Atlbound2  = k_tiles;
+        Atlbound2  = k_tiles
         Atlstride2 = A_tile_bytes_aligned
     elif stationary == input_stationary:
         Atlbound0  = n_tiles;  #first move in N dimension
         Atlstride0 = 0
-        Atlbound1  = m_tiles;
+        Atlbound1  = m_tiles
         Atlstride1 = k_tiles * A_tile_bytes_aligned
         Atlbound2  = k_tiles;
         Atlstride2 = A_tile_bytes_aligned
@@ -178,25 +183,25 @@ def data_file_emit(**kwargs):
     B_tile_bytes_aligned = int(ceil(B_tile_bytes / bank_bytes) * bank_bytes)
 
     if stationary == output_stationary:
-        Btlbound0  = k_tiles;
+        Btlbound0  = k_tiles
         Btlstride0 = B_tile_bytes_aligned
-        Btlbound1  = n_tiles;
+        Btlbound1  = n_tiles
         Btlstride1 = k_tiles * B_tile_bytes_aligned
-        Btlbound2  = m_tiles;
+        Btlbound2  = m_tiles
         Btlstride2 = 0
     elif stationary == weight_stationary:
-        Btlbound0  = m_tiles;
+        Btlbound0  = m_tiles
         Btlstride0 = 0
-        Btlbound1  = n_tiles;
+        Btlbound1  = n_tiles
         Btlstride1 = k_tiles * B_tile_bytes_aligned
-        Btlbound2  = k_tiles;
+        Btlbound2  = k_tiles
         Btlstride2 = B_tile_bytes_aligned
     elif stationary == input_stationary:
-        Btlbound0  = n_tiles;
+        Btlbound0  = n_tiles
         Btlstride0 = k_tiles * B_tile_bytes_aligned
-        Btlbound1  = m_tiles;
+        Btlbound1  = m_tiles
         Btlstride1 = 0
-        Btlbound2  = k_tiles;
+        Btlbound2  = k_tiles
         Btlstride2 = B_tile_bytes_aligned
 
     data_str += [format_scalar_definition("int32_t", "Btlbound0",  Btlbound0)]
@@ -338,7 +343,7 @@ def data_file_emit(**kwargs):
     B_tile_pad   = int(B_tile_bytes_aligned - B_tile_bytes)
     B_transposed = (B_input
                     .reshape(k_tiles, parfor_K, n_tiles, parfor_N)
-                    .transpose(0, 2, 1, 3)
+                    .transpose(2, 0, 3, 1)
                     .reshape(k_tiles * n_tiles, int(B_tile_bytes)))
     if B_tile_pad > 0:
         B_tiled = np.concatenate([
@@ -379,7 +384,49 @@ def data_file_emit(**kwargs):
                .reshape(m_tiles, parfor_M, n_tiles, parfor_N)
                .transpose(0, 2, 1, 3)
                .flatten())
+    # ---- Verify streamer alignment and output tiling correctness ----
+    _a_aln  = int(A_tile_bytes_aligned)
+    _b_aln  = int(B_tile_bytes_aligned)
+    _a_elem = int(A_tile_bytes)
+    _b_elem = int(B_tile_bytes)
+    A_mem   = A_tiled.reshape(m_tiles * k_tiles, _a_aln)
+    B_mem   = B_tiled.reshape(k_tiles * n_tiles, _b_aln)
+
+    # A: streamer reads row [m*k_tiles + k] for tile (m_tile, *, k_tile)
+    a_ok = all(
+        np.array_equal(
+            A_mem[m * k_tiles + k, :_a_elem].astype(np.int8),
+            A_input[m*parfor_M:(m+1)*parfor_M, k*parfor_K:(k+1)*parfor_K].flatten().astype(np.int8)
+        )
+        for m in range(m_tiles) for k in range(k_tiles)
+    )
+
+    # B: streamer reads row [n*k_tiles + k] for tile (*, n_tile, k_tile) — n outer, k inner
+    b_ok = all(
+        np.array_equal(
+            B_mem[n * k_tiles + k, :_b_elem].astype(np.int8),
+            B_input[k*parfor_K:(k+1)*parfor_K, n*parfor_N:(n+1)*parfor_N].flatten().astype(np.int8)
+        )
+        for n in range(n_tiles) for k in range(k_tiles)
+    )
+
+    # D: untile D_tiled and compare with D_golden
+    D_untiled = (D_tiled
+                 .reshape(m_tiles, n_tiles, parfor_M, parfor_N)
+                 .transpose(0, 2, 1, 3)
+                 .reshape(m_padded, n_padded))
+    d_ok = np.allclose(D_untiled, D_golden, rtol=0, atol=0)
+
+    print(f"[verify] A streamer alignment: {'OK' if a_ok else 'FAIL'}", file=sys.stderr)
+    print(f"[verify] B streamer alignment: {'OK' if b_ok else 'FAIL'}", file=sys.stderr)
+    print(f"[verify] D tiling roundtrip:   {'OK' if d_ok else 'FAIL'}", file=sys.stderr)
+    if not (a_ok and b_ok and d_ok):
+        raise SystemExit("[datagen] Tiling verification FAILED – fix before generating data")
+
     data_str += [format_vector_definition("uint32_t", "O_golden", D_tiled.view(np.uint32))]#need to store as uint32 to align with C library
+    # data_str += [format_vector_definition("float", "A_human_readable", A_quantized)]
+    # data_str += [format_vector_definition("float", "B_human_readable", B_quantized)]
+    data_str += [format_vector_definition("float", "O_human_readable", D_tiled)]
     data_str = "\n\n".join(data_str)
     return data_str
 

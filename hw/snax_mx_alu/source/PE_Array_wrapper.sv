@@ -20,7 +20,7 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module gemm_engine_4way #(
+module PE_Array_wrapper #(
     parameter int unsigned SRC_WIDTH   = 8,
     parameter int unsigned DST_WIDTH   = 32,
     parameter int unsigned TileRows    = 2,
@@ -68,7 +68,7 @@ module gemm_engine_4way #(
     output logic [0:TileRows-1][0:TileCols-1][DST_WIDTH-1:0] results_o
 );
 
-    logic [0:TileRows-1][0:TileCols-1] dot_done_bus;
+    logic [0:TileRows-1][0:TileCols-1] PE_done_bus;
     // logic       internal_valid;
 
     assign A_ready_o = ~send_output_i; 
@@ -100,32 +100,52 @@ module gemm_engine_4way #(
     // end
 
     //assign done_o = (acc_count_o == target_count_i) && !busy_o;
+    logic internal_valid;
+    assign internal_valid =(A_valid_i&&B_valid_i);
 
     // --- Array Instantiation ---
-    generate
+       generate
         for (genvar i = 0; i < TileRows; i++) begin : gen_units
             for (genvar j = 0; j < TileCols; j++) begin
-                onedotproduct #(
-                    .SRC_WIDTH(SRC_WIDTH),
-                    .SCALE_WIDTH(SCALE_WIDTH),
-                    .DST_WIDTH(DST_WIDTH)
-                ) u_dot (
-                    .clk_i       (clk_i),
-                    .rst_ni      (rst_ni),
-                    .operands_a_i(op_a_i[i]),
-                    .operands_b_i(op_b_i[j]),
-                    .src_fmt_i   (mxfp8_pkg::E5M2),
-                    .dst_fmt_i   (mxfp8_pkg::FP32),
-                    .scale_a_i     (shared_exp_A_i[i]),
-                    .scale_b_i   (shared_exp_B_i[j]),
-                    .a_valid_i   (A_valid_i),
-                    .b_valid_i   (B_valid_i),
-                    .init_save_i (acc_reset_i),
-                    .done_o      (dot_done_bus[i][j]),
-                    .result_o    (results_o[i][j])
+                DotProductUnit_E5M2_x_E5M2_scale_UE8M0 u_PE_i_j(
+                    .clock(clk_i),
+                    .reset(rst_ni),
+                    .io_op_a_i(op_a_i[i]),
+                    .io_op_b_i(op_b_i[j]),
+                    .io_share_exp_A_i(shared_exp_A_i[i]),
+                    .io_share_exp_B_i(shared_exp_B_i[j]),
+                    .io_validIn(internal_valid),
+                    .io_resetAcc(acc_reset_i),
+                    .io_validOut(PE_done_bus[i][j]),
+                    .io_accOut(results_o[i][j])
                 );
             end
         end
     endgenerate
+    // generate
+    //     for (genvar i = 0; i < TileRows; i++) begin : gen_units
+    //         for (genvar j = 0; j < TileCols; j++) begin
+    //             onedotproduct #(
+    //                 .SRC_WIDTH(SRC_WIDTH),
+    //                 .SCALE_WIDTH(SCALE_WIDTH),
+    //                 .DST_WIDTH(DST_WIDTH)
+    //             ) u_dot (
+    //                 .clk_i       (clk_i),
+    //                 .rst_ni      (rst_ni),
+    //                 .operands_a_i(op_a_i[i]),
+    //                 .operands_b_i(op_b_i[j]),
+    //                 .src_fmt_i   (mxfp8_pkg::E5M2),
+    //                 .dst_fmt_i   (mxfp8_pkg::FP32),
+    //                 .scale_a_i     (shared_exp_A_i[i]),
+    //                 .scale_b_i   (shared_exp_B_i[j]),
+    //                 .a_valid_i   (A_valid_i),
+    //                 .b_valid_i   (B_valid_i),
+    //                 .init_save_i (acc_reset_i),
+    //                 .done_o      (PE_done_bus[i][j]),
+    //                 .result_o    (results_o[i][j])
+    //             );
+    //         end
+    //     end
+    // endgenerate
 
 endmodule
