@@ -90,6 +90,26 @@ ifeq (${CFG_OVERRIDE}, cfg/snitch_cluster.hjson)
 
 endif
 
+SNAX_MX_ORCHESTRATOR ?= $(MKFILE_DIR)sw/apps/snax-mx/orchestrator.py
+SNAX_MX_GEN_CFG      := $(MKFILE_DIR)cfg/snax_mx_cluster.hjson
+
+ifeq (${CFG_OVERRIDE}, cfg/snax_mx_cluster.hjson)
+
+	CFG_FILE := $(SNAX_MX_GEN_CFG)
+
+.PHONY: snax-mx-datagen
+snax-mx-datagen:
+	python3 $(SNAX_MX_ORCHESTRATOR) \
+		--hwcfg $(MKFILE_DIR)cfg/snax_mx_cluster_template.hjson \
+		--genhw $(SNAX_MX_GEN_CFG) \
+		--output $(MKFILE_DIR)sw/apps/snax-mx/data/data.h
+
+# bender_targets.tmp depends on CFG_FILE (the generated hjson),
+# so orchestrator must run first (order-only prerequisite)
+$(GENERATED_DIR)/bender_targets.tmp: | snax-mx-datagen
+
+endif
+
 .PHONY: rtl-snax-gen rtl-gen
 
 rtl-snax-gen: | $(GENERATED_DIR)

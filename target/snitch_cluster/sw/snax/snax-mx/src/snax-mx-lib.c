@@ -189,9 +189,9 @@ uint32_t check_mx_result(uint32_t* output, uint32_t* output_golden,
     for (int i = 0; i < out_len; i++) {
         int mismatch = (output[i] != output_golden[i]);
         printf("[%d]: expected ", i);
-        snax_print_f32(output_golden[i]);
+        //snax_print_f32(output_golden[i]);
         printf(" (0x%08x), got ", output_golden[i]);
-        snax_print_f32(output[i]);
+        //snax_print_f32(output[i]);
         printf(" (0x%08x)%s\n", output[i], mismatch ? " <-- MISMATCH" : "");
         if (mismatch) err++;
     }

@@ -9,7 +9,7 @@ MK_DIR   := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 DATA_DIR := $(realpath $(MK_DIR))
 
 DATA_CFG ?= $(DATA_DIR)/params.hjson
-CFG_OVERRIDE ?= cfg/snax_mx_cluster.hjson
+# CFG_OVERRIDE ?= cfg/snax_mx_cluster.hjson
 
 DATA_H = $(DATA_DIR)/data.h
 

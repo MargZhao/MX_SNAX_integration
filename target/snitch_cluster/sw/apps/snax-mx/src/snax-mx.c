@@ -104,7 +104,7 @@ int main() {
 
         // Read performance counter
         printf("======================================\n");
-        printf("SNAX Exercise Accelerator Finished!\n");
+        printf("SNAX MX Accelerator Finished!\n");
         printf("Hardware Cycles: %d \n", read_mx_perf_counter());
         if (err == 0) {
             printf(">>> SUCCESS! Golden model matched! <<<\n");

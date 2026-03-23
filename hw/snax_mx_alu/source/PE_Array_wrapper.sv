@@ -59,8 +59,8 @@ module PE_Array_wrapper #(
     //input  logic [15:0] target_count_i, // How many steps to accumulate before 'done'
     
     // --- Data Interface (Quad-way SIMD) ---
-    input  logic [0:TileRows-1][SRC_WIDTH-1:0] op_a_i, // 2 separate A operands
-    input  logic [0:TileCols-1][SRC_WIDTH-1:0] op_b_i, // 2 separate B operands
+    input  logic [0:TileRows-1][0:VectorSize-1][SRC_WIDTH-1:0] op_a_i, // 2 separate A operands
+    input  logic [0:TileCols-1][0:VectorSize-1][SRC_WIDTH-1:0] op_b_i, // 2 separate B operands
     input  logic [0:TileRows-1][SCALE_WIDTH-1:0]    shared_exp_A_i,
     input  logic [0:TileCols-1][SCALE_WIDTH-1:0]    shared_exp_B_i,
     
@@ -74,31 +74,6 @@ module PE_Array_wrapper #(
     assign A_ready_o = ~send_output_i; 
     assign B_ready_o = ~send_output_i;
 
-    // --- Control System & Counter ---
-    // always_ff @(posedge clk_i or negedge rst_ni) begin
-    //     if (!rst_ni) begin
-    //         acc_count_o    <= '0;
-    //         busy_o         <= 1'b0;
-    //         internal_valid <= 1'b0;
-    //     end else begin
-    //         if (start_i && !busy_o) begin
-    //             busy_o         <= 1'b1;
-    //             acc_count_o    <= '0;
-    //             internal_valid <= 1'b1;
-    //         end else if (busy_o) begin
-    //             if (dot_done_bus[0]) begin // Use unit 0 as the reference for the counter
-    //                 acc_count_o <= acc_count_o + 1;
-                    
-    //                 // Automatically stop when target is reached
-    //                 if (acc_count_o >= target_count_i - 1) begin
-    //                     busy_o         <= 1'b0;
-    //                     internal_valid <= 1'b0;
-    //                 end
-    //             end
-    //         end
-    //     end
-    // end
-
     //assign done_o = (acc_count_o == target_count_i) && !busy_o;
     logic internal_valid;
     assign internal_valid =(A_valid_i&&B_valid_i);
@@ -107,11 +82,29 @@ module PE_Array_wrapper #(
        generate
         for (genvar i = 0; i < TileRows; i++) begin : gen_units
             for (genvar j = 0; j < TileCols; j++) begin
-                DotProductUnit_E5M2_x_E5M2_scale_UE8M0 u_PE_i_j(
+            //     DotProductUnit_E5M2_x_E5M2_scale_UE8M0 u_PE_i_j(
+            //         .clock(clk_i),
+            //         .reset(rst_ni),
+            //         .io_op_a_i(op_a_i[i]),
+            //         .io_op_b_i(op_b_i[j]),
+            //         .io_share_exp_A_i(shared_exp_A_i[i]),
+            //         .io_share_exp_B_i(shared_exp_B_i[j]),
+            //         .io_validIn(internal_valid),
+            //         .io_resetAcc(acc_reset_i),
+            //         .io_validOut(PE_done_bus[i][j]),
+            //         .io_accOut(results_o[i][j])
+            //     );
+            FusedDotProductUnit_E5M2_x_E5M2_scale_UE8M0_vec4 u_PE_i_j(
                     .clock(clk_i),
                     .reset(rst_ni),
-                    .io_op_a_i(op_a_i[i]),
-                    .io_op_b_i(op_b_i[j]),
+                    .io_op_a_i_0(op_a_i[i][0]),
+                    .io_op_a_i_1(op_a_i[i][1]),
+                    .io_op_a_i_2(op_a_i[i][2]),
+                    .io_op_a_i_3(op_a_i[i][3]),
+                    .io_op_b_i_0(op_b_i[j][0]),
+                    .io_op_b_i_1(op_b_i[j][1]),
+                    .io_op_b_i_2(op_b_i[j][2]),
+                    .io_op_b_i_3(op_b_i[j][3]),
                     .io_share_exp_A_i(shared_exp_A_i[i]),
                     .io_share_exp_B_i(shared_exp_B_i[j]),
                     .io_validIn(internal_valid),
@@ -119,7 +112,9 @@ module PE_Array_wrapper #(
                     .io_validOut(PE_done_bus[i][j]),
                     .io_accOut(results_o[i][j])
                 );
-            end
+
+
+            end  
         end
     endgenerate
     // generate

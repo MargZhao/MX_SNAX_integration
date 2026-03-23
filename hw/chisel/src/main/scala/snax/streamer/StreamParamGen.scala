@@ -22,13 +22,13 @@ object StreamerParametersGen {
   def readerParams = Seq(
     new ReaderWriterParam(
       spatialBounds = List(
-        1
+        2
       ),
       temporalDimension = 3,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
-      numChannel = 1,
+      numChannel = 2,
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,
@@ -38,13 +38,13 @@ object StreamerParametersGen {
    ), 
     new ReaderWriterParam(
       spatialBounds = List(
-        1
+        2
       ),
       temporalDimension = 3,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
-      numChannel = 1,
+      numChannel = 2,
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,
@@ -73,13 +73,13 @@ object StreamerParametersGen {
   def writerParams = Seq(
     new ReaderWriterParam(
       spatialBounds = List(
-        2
+        8
       ),
       temporalDimension = 2,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
-      numChannel = 2,
+      numChannel = 8,
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,

@@ -2,11 +2,11 @@
     //array_shape: 1
     //data_type: 0
     K: 32
-    N: 8
-    M: 8
-    parfor_M: 2
-    parfor_N: 2
-    parfor_K: 1
+    N: 16
+    M: 16
+    parfor_M: 4
+    parfor_N: 4
+    parfor_K: 4
     block_size: 32
     A_bit_width: 8
     B_bit_width: 8

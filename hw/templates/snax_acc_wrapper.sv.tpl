@@ -232,7 +232,19 @@ module ${cfg["tag_name"]}_wrapper # (
   // Do not pass it from the top towards here to achieve
   // Uniform shell wrapping :)
   
+<%
+  _params = cfg.get("snax_acc_params", {})
+  _param_items = list(_params.items())
+%>\
+% if _param_items:
+  ${cfg["tag_name"]}_shell_wrapper #(
+% for _pi, (_pn, _pv) in enumerate(_param_items):
+    .${_pn}(${_pv})${"" if _pi == len(_param_items)-1 else ","}
+% endfor
+  ) i_${cfg["tag_name"]}_shell_wrapper (
+% else:
   ${cfg["tag_name"]}_shell_wrapper i_${cfg["tag_name"]}_shell_wrapper (
+% endif
     //-------------------------------
     // Clocks and reset
     //-------------------------------

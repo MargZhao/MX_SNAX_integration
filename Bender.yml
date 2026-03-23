@@ -308,13 +308,14 @@ sources:
       # Level 2
       - target/snitch_cluster/generated/snax_alu/snax_alu_wrapper.sv
 
-  # TODO: SNAX MX ALU
+  # SNAX MX
   - target: snax_mx_alu
     files:
       # Level 0
       - hw/snax_mx_alu/source/mxfp8_pkg.sv
       - hw/snax_mx_alu/source/PE_Array_wrapper.sv
-      - hw/snax_mx_alu/source/DotProductUnit_E5M2_x_E5M2_scale_UE8M0.sv
+      # - hw/snax_mx_alu/source/DotProductUnit_E5M2_x_E5M2_scale_UE8M0.sv
+      - hw/snax_mx_alu/source/FusedDotProductUnit_E5M2_x_E5M2_scale_UE8M0_vec4.sv
       #- hw/snax_mx_alu/source/onedotproduct.sv
       - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_reqrspman_ReqRspManager.sv
       - target/snitch_cluster/generated/snax_mx_alu/snax_mx_alu_Streamer.sv
