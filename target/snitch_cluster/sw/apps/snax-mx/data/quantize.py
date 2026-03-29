@@ -75,12 +75,12 @@ class E5M2:
             return self
         exp = int(np.floor(np.log2(abs_x)))
         exp_enc = exp + self.BIAS
-        if exp_enc < 0:
-            self.sign, self.exponent, self.mantissa = sign, 0, 0
-        elif exp_enc == 0:
+        if exp_enc <= 0:
             mant = int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 4))
-            mant = max(0, min(3, mant))
-            self.sign, self.exponent, self.mantissa = sign, 0, mant
+            if mant == (1 << 2):  # carry out of subnormal → promote to smallest normal
+                self.sign, self.exponent, self.mantissa = sign, 1, 0
+            else:
+                self.sign, self.exponent, self.mantissa = sign, 0, mant
         else:
             mant = int(np.round((abs_x / (2.0 ** exp) - 1.0) * 4))
             if mant >= 4:
@@ -131,12 +131,12 @@ class E4M3:
             return self
         exp = int(np.floor(np.log2(abs_x)))
         exp_enc = exp + self.BIAS
-        if exp_enc < 0:
-            self.sign, self.exponent, self.mantissa = sign, 0, 0
-        elif exp_enc == 0:
+        if exp_enc <= 0:
             mant = int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 8))
-            mant = max(0, min(7, mant))
-            self.sign, self.exponent, self.mantissa = sign, 0, mant
+            if mant == (1 << 3):  # carry out of subnormal → promote to smallest normal
+                self.sign, self.exponent, self.mantissa = sign, 1, 0
+            else:
+                self.sign, self.exponent, self.mantissa = sign, 0, mant
         else:
             mant = int(np.round((abs_x / (2.0 ** exp) - 1.0) * 8))
             if mant >= 8:
@@ -190,12 +190,16 @@ class E3M2:
             return self
         exp = int(np.floor(np.log2(abs_x)))
         exp_enc = exp + self.BIAS
-        if exp_enc < 0:
-            self.sign, self.exponent, self.mantissa = sign, 0, 0
-        elif exp_enc == 0:
+        if exp_enc <= 0:
+            # 除以步长，并使用 np.round 进行银行家舍入 (RNTE)
             mant = int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 4))
-            mant = max(0, min(3, mant))
-            self.sign, self.exponent, self.mantissa = sign, 0, mant
+            
+            # 如果尾数进位溢出 (比如 E2M1 中 mant 变成了 2)
+            # 意味着它跨越了边界，晋升为最小的正规值 (Normal)
+            if mant == (1 << 2):
+                self.sign, self.exponent, self.mantissa = sign, 1, 0
+            else:
+                self.sign, self.exponent, self.mantissa = sign, 0, mant
         else:
             mant = int(np.round((abs_x / (2.0 ** exp) - 1.0) * 4))
             if mant >= 4:
@@ -247,12 +251,22 @@ class E2M3:
             return self
         exp = int(np.floor(np.log2(abs_x)))
         exp_enc = exp + self.BIAS
-        if exp_enc < 0:
-            self.sign, self.exponent, self.mantissa = sign, 0, 0
-        elif exp_enc == 0:
+        # if exp_enc < 0:
+        #     self.sign, self.exponent, self.mantissa = sign, 0, 0
+        # elif exp_enc == 0:
+        #     mant = int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 8))
+        #     mant = max(0, min(7, mant))
+        #     self.sign, self.exponent, self.mantissa = sign, 0, mant
+        if exp_enc <= 0:
+            # 除以步长，并使用 np.round 进行银行家舍入 (RNTE)
             mant = int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 8))
-            mant = max(0, min(7, mant))
-            self.sign, self.exponent, self.mantissa = sign, 0, mant
+            
+            # 如果尾数进位溢出 (比如 E2M1 中 mant 变成了 2)
+            # 意味着它跨越了边界，晋升为最小的正规值 (Normal)
+            if mant == (1 << 3):
+                self.sign, self.exponent, self.mantissa = sign, 1, 0
+            else:
+                self.sign, self.exponent, self.mantissa = sign, 0, mant
         else:
             mant = int(np.round((abs_x / (2.0 ** exp) - 1.0) * 8))
             if mant >= 8:
@@ -303,12 +317,27 @@ class E2M1:
             return self
         exp = int(np.floor(np.log2(abs_x)))   # fixed: was np.round
         exp_enc = exp + self.BIAS
-        if exp_enc < 0:
-            self.sign, self.exponent, self.mantissa = sign, 0, 0
-        elif exp_enc == 0:
-            mant = int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 2))
-            mant = max(0, min(1, mant))
-            self.sign, self.exponent, self.mantissa = sign, 0, mant
+        # if exp_enc < 0:
+        #     self.sign, self.exponent, self.mantissa = sign, 0, int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 2))
+        # elif exp_enc == 0:
+        #     mant = int(np.round(abs_x / (2.0 ** (1 - self.BIAS)) * 2))
+        #     mant = max(0, min(1, mant))
+        #     self.sign, self.exponent, self.mantissa = sign, 0, mant
+        if exp_enc <= 0:
+            # 计算次极小值（subnormal）的步长
+            # E2M1中为: 2^(1 - 1) * 0.5 = 0.5
+            subnormal_step = (2.0 ** (1 - self.BIAS)) / 2.0
+            
+            # 使用 np.round 进行缩放后的四舍五入。
+            # Python/NumPy 的 np.round 默认就是 Ties to Even
+            mant = int(np.round(abs_x / subnormal_step))
+            
+            if mant == 0:
+                self.sign, self.exponent, self.mantissa = sign, 0, 0
+            elif mant == 1:
+                self.sign, self.exponent, self.mantissa = sign, 0, 1
+            else:
+                self.sign, self.exponent, self.mantissa = sign, 1, 0
         else:
             mant = int(np.round((abs_x / (2.0 ** exp) - 1.0) * 2))
             if mant >= 2:
@@ -377,6 +406,16 @@ _EMAX = {
     'fp6_e2m3': 2,    # max unbiased exp = 3 - 1
     'fp4_e2m1': 2,    # max unbiased exp = 3 - 1
     'mxint8':   0,    # values in [-1.984, 1.984]; shared_exp = floor(log2(max_abs))
+}
+
+# Logical bit width of each element format (before any bit-packing)
+_DTYPE_BITS = {
+    'fp8_e4m3': 8,
+    'fp8_e5m2': 8,
+    'fp6_e3m2': 6,
+    'fp6_e2m3': 6,
+    'fp4_e2m1': 4,
+    'mxint8':   8,
 }
 
 VALID_DTYPES = list(_DATA_CLASSES.keys()) + ['int8']
@@ -602,6 +641,7 @@ def quantize_mx(
     else:
         raise ValueError(f"axis must be 0 or 1, got {axis}")
 
+    #FIXME: do not use this!!! it is wrong
     if packed and dtype not in ('fp8_e4m3', 'fp8_e5m2', 'int8'):
         # Pack each row independently
         packed_rows = [_pack_raw_1d(raw_arr[i], dtype) for i in range(Row)]

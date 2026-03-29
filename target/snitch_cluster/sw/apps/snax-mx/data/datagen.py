@@ -92,8 +92,10 @@ def data_file_emit(**kwargs):
     A_fp32_padded[:M, :K] = A_fp32
     B_fp32_padded[:K, :N] = B_fp32  
     
-    A_quantized, exp_A, A_input = quantize.quantize_mx(A_fp32_padded, 'fp8_e5m2', block_size=block_size, axis=1)
-    B_quantized, exp_B, B_input = quantize.quantize_mx(B_fp32_padded, 'fp8_e5m2', block_size=block_size, axis=0)
+    A_dtype = kwargs["A_dtype"]
+    B_dtype = kwargs["B_dtype"]
+    A_quantized, exp_A, A_input = quantize.quantize_mx(A_fp32_padded, A_dtype, block_size=block_size, axis=1)
+    B_quantized, exp_B, B_input = quantize.quantize_mx(B_fp32_padded, B_dtype, block_size=block_size, axis=0)
 
     #######################################################
     ################### CSR  settings #####################
@@ -111,8 +113,8 @@ def data_file_emit(**kwargs):
     #######################################################
 
 
-    a_bitwidth = kwargs["A_bit_width"]
-    b_bitwidth = kwargs["B_bit_width"]
+    a_bitwidth = quantize._DTYPE_BITS[kwargs["A_dtype"]]
+    b_bitwidth = quantize._DTYPE_BITS[kwargs["B_dtype"]]
     bankwidth  = 64
     shared_bitwidth = 8
 
@@ -324,34 +326,36 @@ def data_file_emit(**kwargs):
     ##################### data arrays #####################
     #######################################################
 
-    # ---- A: tile reorder (m_tiles, k_tiles, parfor_M, parfor_K), pad to bank boundary ----
-    A_tile_pad   = int(A_tile_bytes_aligned - A_tile_bytes)
-    A_transposed = (A_input
-                    .reshape(m_tiles, parfor_M, k_tiles, parfor_K)
-                    .transpose(0, 2, 1, 3)
-                    .reshape(m_tiles * k_tiles, int(A_tile_bytes)))
-    if A_tile_pad > 0:
-        A_tiled = np.concatenate([
-            A_transposed,
-            np.zeros((m_tiles * k_tiles, A_tile_pad), dtype=np.uint8)
-        ], axis=1).flatten().view(np.int8)
-    else:
-        A_tiled = A_transposed.flatten().view(np.int8)
+    # ---- A: tile reorder (m_tiles, k_tiles, parfor_M, parfor_K), pack, pad to bank boundary ----
+    # quantize_mx returns one byte per element (packed=False); reshape by element count,
+    # then bit-pack each tile (no-op for FP8, 4-elems/3-bytes for FP6, 2-elems/byte for FP4).
+    A_tile_pad  = int(A_tile_bytes_aligned - A_tile_bytes)
+    A_reordered = (A_input
+                   .reshape(m_tiles, parfor_M, k_tiles, parfor_K)
+                   .transpose(0, 2, 1, 3)
+                   .reshape(m_tiles * k_tiles, parfor_M * parfor_K))
+    A_tiles = []
+    for row in A_reordered:
+        packed = quantize._pack_raw_1d(row, A_dtype)
+        if A_tile_pad > 0:
+            packed = np.concatenate([packed, np.zeros(A_tile_pad, dtype=np.uint8)])
+        A_tiles.append(packed)
+    A_tiled = np.concatenate(A_tiles).view(np.int8)
     data_str += [format_vector_definition("int8_t", "A", A_tiled)]
 
-    # ---- B: tile reorder (k_tiles, n_tiles, parfor_K, parfor_N), pad to bank boundary ----
-    B_tile_pad   = int(B_tile_bytes_aligned - B_tile_bytes)
-    B_transposed = (B_input
-                    .reshape(k_tiles, parfor_K, n_tiles, parfor_N)
-                    .transpose(2, 0, 3, 1)
-                    .reshape(k_tiles * n_tiles, int(B_tile_bytes)))
-    if B_tile_pad > 0:
-        B_tiled = np.concatenate([
-            B_transposed,
-            np.zeros((k_tiles * n_tiles, B_tile_pad), dtype=np.uint8)
-        ], axis=1).flatten().view(np.int8)
-    else:
-        B_tiled = B_transposed.flatten().view(np.int8)
+    # ---- B: tile reorder (k_tiles, n_tiles, parfor_K, parfor_N), pack, pad to bank boundary ----
+    B_tile_pad  = int(B_tile_bytes_aligned - B_tile_bytes)
+    B_reordered = (B_input
+                   .reshape(k_tiles, parfor_K, n_tiles, parfor_N)
+                   .transpose(2, 0, 3, 1)
+                   .reshape(k_tiles * n_tiles, parfor_K * parfor_N))
+    B_tiles = []
+    for row in B_reordered:
+        packed = quantize._pack_raw_1d(row, B_dtype)
+        if B_tile_pad > 0:
+            packed = np.concatenate([packed, np.zeros(B_tile_pad, dtype=np.uint8)])
+        B_tiles.append(packed)
+    B_tiled = np.concatenate(B_tiles).view(np.int8)
     data_str += [format_vector_definition("int8_t", "B", B_tiled)]
 
     # ---- Combined A+B scale (E8M0, biased by 127) ----
@@ -379,7 +383,41 @@ def data_file_emit(**kwargs):
     data_str += [format_vector_definition("int8_t", "scale", combined_scale)]
 
     # ---- D golden: A_quantized @ B_quantized, tile reorder (m_tiles, n_tiles, parfor_M, parfor_N) ----
-    D_golden = (A_quantized @ B_quantized).astype(np.float32)
+    # D_golden = (A_quantized @ B_quantized).astype(np.float32)
+
+    # ---- D golden: simulate hardware truncating FP32 adder and tree reduction ----
+    # Hardware FP32Adder truncates (discards guard bits) instead of rounding to nearest.
+    # VectorSize products are reduced via a balanced binary tree, then added to the accumulator.
+    def fp32_add_truncate(a, b):
+        """FP32 add matching hardware FP32Adder: truncates guard bits (round-toward-zero)."""
+        result_f64 = np.float64(a) + np.float64(b)
+        if result_f64 == 0.0:
+            return np.float32(0.0)
+        r_f32 = np.float32(result_f64)
+        # If numpy rounded magnitude upward, subtract 1 ULP to simulate truncation
+        if abs(float(r_f32)) > abs(float(result_f64)):
+            bits = struct.unpack('I', struct.pack('f', float(r_f32)))[0]
+            mag = (bits & 0x7FFFFFFF) - 1
+            bits = (bits & 0x80000000) | (mag & 0x7FFFFFFF)
+            r_f32 = np.float32(struct.unpack('f', struct.pack('I', bits))[0])
+        return r_f32
+
+    def tree_reduce_truncate(vals):
+        """Balanced binary tree reduction using truncating FP32 adder."""
+        while len(vals) > 1:
+            vals = [fp32_add_truncate(vals[i], vals[i+1]) if i+1 < len(vals) else vals[i]
+                    for i in range(0, len(vals), 2)]
+        return vals[0]
+
+    D_golden = np.zeros((m_padded, n_padded), dtype=np.float32)
+    for m in range(m_padded):
+        for n in range(n_padded):
+            acc = np.float32(0.0)
+            for k in range(0, k_aligned_blocksize, parfor_K):
+                products = [np.float32(A_quantized[m, k+v]) * np.float32(B_quantized[k+v, n])
+                            for v in range(parfor_K)]
+                acc = fp32_add_truncate(acc, tree_reduce_truncate(products))
+            D_golden[m, n] = acc
     D_tiled = (D_golden
                .reshape(m_tiles, parfor_M, n_tiles, parfor_N)
                .transpose(0, 2, 1, 3)

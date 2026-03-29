@@ -1,7 +1,6 @@
 project/*
 !project/plugins.sbt
 !project/build.properties
-generated
 target
 out
 

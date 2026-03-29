@@ -64,16 +64,16 @@ class SpatialArrayTest extends AnyFlatSpec with ChiselScalatestTester {
             }
 
             // Poke the random values
-            c.io.array_data.in_a.bits.poke(a.U)
-            c.io.array_data.in_b.bits.poke(b.U)
-            c.io.array_data.in_c.bits.poke(0.U)
+            c.io.data.in_a.bits.poke(a.U)
+            c.io.data.in_b.bits.poke(b.U)
+            c.io.data.in_c.bits.poke(0.U)
 
             // Enable valid signals
-            c.io.array_data.in_a.valid.poke(true.B)
-            c.io.array_data.in_b.valid.poke(true.B)
-            c.io.array_data.in_c.valid.poke(true.B)
-            c.io.array_data.in_subtraction.valid.poke(false.B)
-            c.io.array_data.out_d.ready.poke(true.B)
+            c.io.data.in_a.valid.poke(true.B)
+            c.io.data.in_b.valid.poke(true.B)
+            c.io.data.in_c.valid.poke(true.B)
+            c.io.data.in_subtraction.valid.poke(false.B)
+            c.io.data.out_d.ready.poke(true.B)
 
             c.io.ctrl.arrayShapeCfg.poke(arrayShapeIdx.U)
             c.io.ctrl.dataTypeCfg.poke(dataTypeIdx.U)
@@ -82,8 +82,8 @@ class SpatialArrayTest extends AnyFlatSpec with ChiselScalatestTester {
             c.clock.step(1)
 
             // Check the output
-            c.io.array_data.out_d.valid.expect(true.B)
-            val out_d            = c.io.array_data.out_d.bits.peek().litValue
+            c.io.data.out_d.valid.expect(true.B)
+            val out_d            = c.io.data.out_d.bits.peek().litValue
             val extractedOutputs = (0 until (Mu * Nu)).map { i =>
               ((out_d >> (i * outputTypeD.width)) & (math.pow(2, outputTypeD.width).toLong - 1)).toInt
             }
@@ -106,7 +106,7 @@ class SpatialArrayTest extends AnyFlatSpec with ChiselScalatestTester {
     }
 
     var params = SpatialArrayParam(
-      multiplierNum          = Seq(1024),
+      macNum                 = Seq(1024),
       inputTypeA             = Seq(Int8),
       inputTypeB             = Seq(Int8),
       inputTypeC             = Seq(Int32),
@@ -127,7 +127,7 @@ class SpatialArrayTest extends AnyFlatSpec with ChiselScalatestTester {
 
     // Test for a different configuration
     params = SpatialArrayParam(
-      multiplierNum          = Seq(8, 16),
+      macNum                 = Seq(8, 16),
       inputTypeA             = Seq(Int8, Int4),
       inputTypeB             = Seq(Int8, Int4),
       inputTypeC             = Seq(Int32, Int16),
@@ -148,7 +148,7 @@ class SpatialArrayTest extends AnyFlatSpec with ChiselScalatestTester {
     // Test for a different configuration
 
     params = SpatialArrayParam(
-      multiplierNum          = Seq(8),
+      macNum                 = Seq(8),
       inputTypeA             = Seq(Int16),
       inputTypeB             = Seq(Int4),
       inputTypeC             = Seq(Int32),

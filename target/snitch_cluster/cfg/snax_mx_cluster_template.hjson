@@ -119,13 +119,14 @@
             sparse_interconnect_config: [[5, 1]],//TODO: ask
             snax_num_rw_csr: 4,
             snax_num_ro_csr: 2,
-            snax_acc_params: {
+            snax_acc_params: {//default settings
                 TileRows: 1,
                 TileCols: 1,
                 VectorSize: 1,
                 RegRWCount: 4,
                 RegROCount: 2,
-                InputDataWidth: 8,
+                A_Width: 8,
+                B_Width: 8,
                 OutputDataWidth: 32,
             },
             snax_streamer_cfg: {$ref: "#/snax_mx_alu_streamer_template" }

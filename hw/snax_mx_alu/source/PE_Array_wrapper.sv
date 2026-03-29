@@ -21,7 +21,8 @@
 
 
 module PE_Array_wrapper #(
-    parameter int unsigned SRC_WIDTH   = 8,
+    parameter int unsigned A_WIDTH   = 8,
+    parameter int unsigned B_WIDTH   = 8,
     parameter int unsigned DST_WIDTH   = 32,
     parameter int unsigned TileRows    = 2,
     parameter int unsigned TileCols    = 2,
@@ -59,8 +60,8 @@ module PE_Array_wrapper #(
     //input  logic [15:0] target_count_i, // How many steps to accumulate before 'done'
     
     // --- Data Interface (Quad-way SIMD) ---
-    input  logic [0:TileRows-1][0:VectorSize-1][SRC_WIDTH-1:0] op_a_i, // 2 separate A operands
-    input  logic [0:TileCols-1][0:VectorSize-1][SRC_WIDTH-1:0] op_b_i, // 2 separate B operands
+    input  logic [0:TileRows-1][0:VectorSize-1][A_WIDTH-1:0] op_a_i, // 2 separate A operands
+    input  logic [0:TileCols-1][0:VectorSize-1][B_WIDTH-1:0] op_b_i, // 2 separate B operands
     input  logic [0:TileRows-1][SCALE_WIDTH-1:0]    shared_exp_A_i,
     input  logic [0:TileCols-1][SCALE_WIDTH-1:0]    shared_exp_B_i,
     
@@ -94,17 +95,11 @@ module PE_Array_wrapper #(
             //         .io_validOut(PE_done_bus[i][j]),
             //         .io_accOut(results_o[i][j])
             //     );
-            FusedDotProductUnit_E5M2_x_E5M2_scale_UE8M0_vec4 u_PE_i_j(
+            BFP_PE u_PE_i_j(
                     .clock(clk_i),
                     .reset(rst_ni),
-                    .io_op_a_i_0(op_a_i[i][0]),
-                    .io_op_a_i_1(op_a_i[i][1]),
-                    .io_op_a_i_2(op_a_i[i][2]),
-                    .io_op_a_i_3(op_a_i[i][3]),
-                    .io_op_b_i_0(op_b_i[j][0]),
-                    .io_op_b_i_1(op_b_i[j][1]),
-                    .io_op_b_i_2(op_b_i[j][2]),
-                    .io_op_b_i_3(op_b_i[j][3]),
+                    .io_op_a_i(op_a_i[i]),
+                    .io_op_b_i(op_b_i[j]),
                     .io_share_exp_A_i(shared_exp_A_i[i]),
                     .io_share_exp_B_i(shared_exp_B_i[j]),
                     .io_validIn(internal_valid),
@@ -117,30 +112,6 @@ module PE_Array_wrapper #(
             end  
         end
     endgenerate
-    // generate
-    //     for (genvar i = 0; i < TileRows; i++) begin : gen_units
-    //         for (genvar j = 0; j < TileCols; j++) begin
-    //             onedotproduct #(
-    //                 .SRC_WIDTH(SRC_WIDTH),
-    //                 .SCALE_WIDTH(SCALE_WIDTH),
-    //                 .DST_WIDTH(DST_WIDTH)
-    //             ) u_dot (
-    //                 .clk_i       (clk_i),
-    //                 .rst_ni      (rst_ni),
-    //                 .operands_a_i(op_a_i[i]),
-    //                 .operands_b_i(op_b_i[j]),
-    //                 .src_fmt_i   (mxfp8_pkg::E5M2),
-    //                 .dst_fmt_i   (mxfp8_pkg::FP32),
-    //                 .scale_a_i     (shared_exp_A_i[i]),
-    //                 .scale_b_i   (shared_exp_B_i[j]),
-    //                 .a_valid_i   (A_valid_i),
-    //                 .b_valid_i   (B_valid_i),
-    //                 .init_save_i (acc_reset_i),
-    //                 .done_o      (PE_done_bus[i][j]),
-    //                 .result_o    (results_o[i][j])
-    //             );
-    //         end
-    //     end
-    // endgenerate
+   
 
 endmodule

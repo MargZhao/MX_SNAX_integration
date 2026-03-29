@@ -1,17 +1,17 @@
 {
     //array_shape: 1
     //data_type: 0
-    K: 32
-    N: 16
-    M: 16
+    K: 8
+    N: 8
+    M: 8
     parfor_M: 4
     parfor_N: 4
     parfor_K: 4
-    block_size: 32
-    A_bit_width: 8
-    B_bit_width: 8
+    block_size: 16
+    A_dtype: "fp8_e5m2"
+    B_dtype: "fp4_e2m1"
     quantize_mode: 0
-    shared_format:0
+    shared_format: 0
     stationary: 0
     //quantization_enable: 0
     //channel_en_C: 1

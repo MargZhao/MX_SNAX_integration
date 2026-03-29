@@ -38,13 +38,13 @@ object StreamerParametersGen {
    ), 
     new ReaderWriterParam(
       spatialBounds = List(
-        2
+        1
       ),
       temporalDimension = 3,
       tcdmDataWidth = 64,
       tcdmSize = 128,
       tcdmLogicWordSize = Seq(256),
-      numChannel = 2,
+      numChannel = 1,
       addressBufferDepth = 8,
       dataBufferDepth = 8,
       configurableChannel = false,

@@ -27,9 +27,11 @@ from pathlib import Path
 # Default paths (relative to this script's location)
 # ---------------------------------------------------------------------------
 SCRIPT_DIR    = Path(__file__).parent.resolve()
+CHISEL_DIR    = (SCRIPT_DIR / "../../../../../hw/chisel_acc").resolve()
 DEFAULT_SWCFG  = SCRIPT_DIR / "data" / "params.hjson"
 DEFAULT_HWCFG  = SCRIPT_DIR / "../../../cfg/snax_mx_cluster_template.hjson"
 DEFAULT_GEN_HW = SCRIPT_DIR / "../../../cfg/snax_mx_cluster.hjson"
+DEFAULT_GEN_PE = (SCRIPT_DIR / "../../../../../hw/snax_mx_alu/source").resolve()
 DEFAULT_OUTPUT = SCRIPT_DIR / "data" / "data.h"
 DATAGEN_PY     = SCRIPT_DIR / "data" / "datagen.py"
 
@@ -37,6 +39,27 @@ DATAGEN_PY     = SCRIPT_DIR / "data" / "datagen.py"
 # ---------------------------------------------------------------------------
 # HW parameter derivation
 # ---------------------------------------------------------------------------
+
+_DTYPE_BITS = {
+    'fp8_e4m3': 8, 'fp8_e5m2': 8,
+    'fp6_e3m2': 6, 'fp6_e2m3': 6,
+    'fp4_e2m1': 4, 'mxint8':   8,
+}
+
+# Mappings from params.hjson integer codes to Chisel type names
+_ELEMENT_TYPE_MAP = {0: "INT8", 1: "E5M2", 2: "E4M3", 3: "E3M2", 4: "E2M3", 5: "E2M1"}
+_SCALE_FORMAT_MAP = {0: "UE8M0", 1: "UE7M1", 2: "UE6M2", 3: "UE5M3", 4: "UE4M4", 5: "UE3M5", 6: "UE2M6"}
+
+# Mapping from params.hjson dtype strings to _ELEMENT_TYPE_MAP integer codes
+_DTYPE_TO_ELEMENT_TYPE = {
+    'mxint8':   0,  # INT8
+    'fp8_e5m2': 1,  # E5M2
+    'fp8_e4m3': 2,  # E4M3
+    'fp6_e3m2': 3,  # E3M2
+    'fp6_e2m3': 4,  # E2M3
+    'fp4_e2m1': 5,  # E2M1
+}
+
 
 def _o_bitwidth(quantize_mode: int) -> int:
     return {0: 32, 1: 16, 2: 8}.get(quantize_mode, 32)
@@ -63,8 +86,10 @@ def compute_hw_cfg(p: dict) -> dict:
     parfor_M   = p["parfor_M"]
     parfor_N   = p["parfor_N"]
     parfor_K   = p["parfor_K"]
-    A_bits     = p["A_bit_width"]
-    B_bits     = p["B_bit_width"]
+    A_dtype    = p["A_dtype"]
+    B_dtype    = p["B_dtype"]
+    A_bits     = _DTYPE_BITS[A_dtype]
+    B_bits     = _DTYPE_BITS[B_dtype]
     o_bits     = _o_bitwidth(p.get("quantize_mode", 0))
     stationary = p.get("stationary", 0)
 
@@ -94,11 +119,12 @@ def compute_hw_cfg(p: dict) -> dict:
         "writer_temporal_dim":   [writer_tdim],
         "snax_tcdm_ports":       total_channels,
         "sparse_interconnect_config": [[total_channels, 1]],
-        "TileRows":    parfor_M,
-        "TileCols":    parfor_N,
-        "VectorSize":  parfor_K,
-        "InputDataWidth": 8,
-        "OutputDataWidth": 32,
+        "TileRows":       parfor_M,
+        "TileCols":       parfor_N,
+        "VectorSize":     parfor_K,
+        "A_Width":        A_bits,
+        "B_Width":        B_bits,
+        "OutputDataWidth": o_bits,
     }
 
 
@@ -135,13 +161,69 @@ def patch_hwcfg(src: Path, dst: Path, hw: dict) -> None:
             acc["snax_acc_params"]["TileRows"]        = hw["TileRows"]
             acc["snax_acc_params"]["TileCols"]        = hw["TileCols"]
             acc["snax_acc_params"]["VectorSize"]      = hw["VectorSize"]
-            acc["snax_acc_params"]["InputDataWidth"]  = hw["InputDataWidth"]
             acc["snax_acc_params"]["OutputDataWidth"] = hw["OutputDataWidth"]
+            acc["snax_acc_params"]["A_Width"]         = hw["A_Width"]
+            acc["snax_acc_params"]["B_Width"]         = hw["B_Width"]
 
     with open(dst, "w", encoding="utf-8") as f:
         hjson.dump(cfg, f, indent=4)
 
     print(f"[orchestrator] HW config written → {dst}")
+
+
+# ---------------------------------------------------------------------------
+# Chisel RTL generation
+# ---------------------------------------------------------------------------
+
+def run_chisel_gen(p: dict) -> Path:
+    """
+    Derive FusedDotProductUnit parameters from params and invoke sbt to
+    generate SystemVerilog.
+
+    Mapping from params.hjson:
+      data_type     (int, default 0) → type_a and type_b element format
+      shared_format (int, default 0) → scale format
+      parfor_K                       → vectorSize (parallel MACs per cycle)
+    """
+    A_dtype       = p.get("A_dtype",       "mxint8")
+    B_dtype       = p.get("B_dtype",       "mxint8")
+    shared_format = p.get("shared_format", "UE8M0")
+    vec           = p["parfor_K"]
+
+    type_a = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(A_dtype))
+    type_b = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(B_dtype))
+    scale  = _SCALE_FORMAT_MAP.get(shared_format)
+
+    if type_a is None:
+        sys.exit(f"[orchestrator] unknown A_dtype={A_dtype!r}, "
+                 f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
+    if type_b is None:
+        sys.exit(f"[orchestrator] unknown B_dtype={B_dtype!r}, "
+                 f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
+    if scale is None:
+        sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
+                 f"valid: {_SCALE_FORMAT_MAP}")
+
+    #out_dir = CHISEL_DIR / "generated" / "fused_dot" / f"{type_a}_{type_b}_{scale}_vec{vec}"
+    out_dir = DEFAULT_GEN_PE
+    sbt_cmd = (
+        f"runMain mx.GenerateFusedDotProduct"
+        f" --type-a {type_a}"
+        f" --type-b {type_b}"
+        f" --scale  {scale}"
+        f" --vec    {vec}"
+        f" --out-dir {out_dir}"
+    )
+
+    print(f"[orchestrator] Chisel RTL: {type_a} x {type_b}, scale={scale}, vec={vec}")
+    print(f"[orchestrator] sbt {sbt_cmd}")
+    result = subprocess.run(["sbt", sbt_cmd], cwd=CHISEL_DIR)
+    if result.returncode != 0:
+        sys.exit(f"[orchestrator] Chisel generation failed (exit {result.returncode})")
+
+    sv_path = out_dir / "BFP_PE.sv"
+    print(f"[orchestrator] RTL written → {sv_path}")
+    return out_dir
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +242,7 @@ def run_datagen(swcfg: Path, hwcfg: Path, output: Path) -> None:
     print(f"[orchestrator] test data written → {output}")
 
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -170,6 +253,7 @@ def main() -> None:
     ap.add_argument("--hwcfg",  default=DEFAULT_HWCFG,  help="snax_mx_cluster.hjson template")
     ap.add_argument("--genhw",  default=DEFAULT_GEN_HW, help="generated hw config output path")
     ap.add_argument("--output", default=DEFAULT_OUTPUT, help="data.h output path")
+    ap.add_argument("--skip-rtl", action="store_true",    help="skip Chisel RTL generation step")
     args = ap.parse_args()
 
     swcfg  = Path(args.swcfg).resolve()
@@ -188,10 +272,16 @@ def main() -> None:
     for k, v in hw.items():
         print(f"               {k} = {v}")
 
-    # 3. Patch hwcfg → genhw
+    # 3. Generate Chisel RTL
+    if not args.skip_rtl:
+        run_chisel_gen(params)
+    else:
+        print("[orchestrator] skipping Chisel RTL generation (--skip-rtl)")
+
+    # 4. Patch hwcfg → genhw
     patch_hwcfg(hwcfg, genhw, hw)
 
-    # 4. Run datagen
+    # 5. Run datagen
     run_datagen(swcfg, genhw, output)
 
     print("[orchestrator] done.")

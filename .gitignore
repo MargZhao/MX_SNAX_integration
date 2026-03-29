@@ -8,6 +8,8 @@ Bender.lock
 __pycache__
 env
 logs
+.vcd
+.sh
 
 #  File List Synthesis Files
 *_flist.tcl

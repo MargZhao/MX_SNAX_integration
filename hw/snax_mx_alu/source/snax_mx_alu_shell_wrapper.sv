@@ -19,16 +19,18 @@ module snax_mx_alu_shell_wrapper #(
   parameter int unsigned VectorSize   = 4,//parfor K // Accelerator parameters
   parameter int unsigned NumPE       = TileRows*TileCols,
   parameter int unsigned OutputDataWidth = 32,//TODO: FP32, later can be BF16
-  parameter int unsigned InputDataWidth  = 8,
+  parameter int unsigned A_Width  = 8,
+  parameter int unsigned B_Width  = 8,
   parameter int unsigned Portwidth =64,
-  parameter int unsigned InPortsNeeded = (InputDataWidth * NumPE + Portwidth - 1) / Portwidth,
+  parameter int unsigned A_PortsNeeded = (A_Width * NumPE + Portwidth - 1) / Portwidth,
+  parameter int unsigned B_PortsNeeded = (B_Width * NumPE + Portwidth - 1) / Portwidth,
   parameter int unsigned OutPortsNeeded = (OutputDataWidth * NumPE + Portwidth - 1) / Portwidth,
   // A port 
-  parameter int unsigned StreamADataWidth = InPortsNeeded*Portwidth,
+  parameter int unsigned StreamADataWidth = A_PortsNeeded*Portwidth,
   // B port
-  parameter int unsigned StreamBDataWidth = InPortsNeeded*Portwidth,
+  parameter int unsigned StreamBDataWidth = B_PortsNeeded*Portwidth,
   // 1 Shared exponent port
-  parameter int unsigned StreamSharedExpDataWidth = (TileRows + TileCols) * 8,
+  parameter int unsigned StreamSharedExpDataWidth = (TileRows + TileCols) * 8,//TODO: change the constant 8 into share_width, more semantic
   
   parameter int unsigned StreamCDataWidth = OutPortsNeeded*Portwidth,
   //---------------Overall parameters-----------------------
@@ -156,11 +158,9 @@ module snax_mx_alu_shell_wrapper #(
 
   // Wiring for accelerator ports
   // TODO: Inputs, we have 8x8 MAC in total, for 1 mac it can do 1 INT8 op per cycle, or 4 FP8/FP6, or 8 FP4 ops per cycle. 
-  // logic [0:7][7:0] A_INT8;
-  // logic [0:7][7:0] B_INT8;
 
-  logic [0:TileRows-1][0:VectorSize-1][InputDataWidth-1:0] A_i;
-  logic [0:TileCols-1][0:VectorSize-1][InputDataWidth-1:0] B_i;
+  logic [0:TileRows-1][0:VectorSize-1][A_Width-1:0] A_i;
+  logic [0:TileCols-1][0:VectorSize-1][B_Width-1:0] B_i;
 
   // logic [0:7][0:3][5:0] A_FP6;
   // logic [0:7][0:3][5:0] B_FP6;
@@ -184,56 +184,18 @@ module snax_mx_alu_shell_wrapper #(
     // ----------------------------------------------------------
     // Top-level loop over the 8 vector lanes
     // ----------------------------------------------------------
-    for (genvar i = 0; i < TileRows; i = i + 1) begin : gen_a_fp8_loop
+    for (genvar i = 0; i < TileRows; i = i + 1) begin : gen_a_loop
       for (genvar j = 0; j < VectorSize; j = j + 1) begin 
-      assign A_i[i][j]= stream2acc_0_data_i[(i*8*VectorSize)+(j*8)+:8]; 
+      assign A_i[i][j]= stream2acc_0_data_i[(i*A_Width*VectorSize)+(j*A_Width)+:A_Width]; 
       end   
     end
-    for (genvar i = 0; i < TileCols; i = i + 1) begin : gen_b_fp8_loop
+    for (genvar i = 0; i < TileCols; i = i + 1) begin : gen_loop
       for (genvar j = 0; j < VectorSize; j = j + 1) begin 
-      assign B_i[i][j] = stream2acc_1_data_i[(i*8*VectorSize)+(j*8)+:8];
+      assign B_i[i][j] = stream2acc_1_data_i[(i*B_Width*VectorSize)+(j*B_Width)+:B_Width];
       end
     end
   endgenerate
-  //  generate
-  //   // ----------------------------------------------------------
-  //   // Top-level loop over the 8 vector lanes
-  //   // ----------------------------------------------------------
-  //   for (genvar i = 0; i < 8; i = i + 1) begin : gen_i_loop
-  //     //--------------------------------------------------------
-  //     // INT8 inputs (1 byte per element)
-  //     //--------------------------------------------------------
-  //     // A_INT8[7-0]  <= stream2acc_0_data_i[7:0]
-  //     // A_INT8[7-1] <= stream2acc_1_data_i[15:8]
-  //     assign A_INT8[8-1-i] = stream2acc_0_data_i[i*8+:8];
-  //     assign B_INT8[8-1-i] = stream2acc_1_data_i[i*8+:8];
-
-  //     //--------------------------------------------------------
-  //     // FP8 inputs (4 elements × 8 bits inside the 32-bit lane)
-  //     //--------------------------------------------------------
-  //     for (genvar j = 0; j < 4; j = j + 1) begin : gen_j_fp8_loop
-  //       assign A_i[8-1-i][4-1-j] = stream2acc_0_data_i[(i*32)+(j*8)+:8];
-  //       assign B_i[8-1-i][4-1-j] = stream2acc_1_data_i[(i*32)+(j*8)+:8];
-  //     end
-
-  //     //--------------------------------------------------------
-  //     // FP6 inputs (4 elements × 6 bits inside a 24-bit slice)
-  //     //--------------------------------------------------------
-  //     for (genvar j = 0; j < 4; j = j + 1) begin : gen_j_fp6_loop
-  //       assign A_FP6[8-1-i][4-1-j] = stream2acc_0_data_i[(i*24)+(j*6)+:6];
-  //       assign B_FP6[8-1-i][4-1-j] = stream2acc_1_data_i[(i*24)+(j*6)+:6];
-  //     end
-
-  //     //--------------------------------------------------------
-  //     // FP4 inputs (8 elements × 4 bits inside a 32-bit slice)
-  //     //--------------------------------------------------------
-  //     for (genvar  j = 0; j < 8; j = j + 1) begin : gen_j_fp4_loop
-  //       assign A_FP4[8-1-i][8-1-j] = stream2acc_0_data_i[(i*32)+(j*4)+:4];
-  //       assign B_FP4[8-1-i][8-1-j] = stream2acc_1_data_i[(i*32)+(j*4)+:4];
-  //     end
-  //   end
-  // endgenerate
-
+  
   // TODO: asymmetry
   
   //--------------------------------------------------------------
@@ -280,7 +242,8 @@ module snax_mx_alu_shell_wrapper #(
   //TODO: check this part, create own PE wrapper
   // M_out_width is ony Mantissa width of output, so for FP32 should be 23 not 32
   PE_Array_wrapper #(
-    .SRC_WIDTH(InputDataWidth),
+    .A_WIDTH(A_Width),
+    .B_WIDTH(B_Width),
     .DST_WIDTH(OutputDataWidth),
     .TileRows(TileRows),
     .TileCols(TileCols),
