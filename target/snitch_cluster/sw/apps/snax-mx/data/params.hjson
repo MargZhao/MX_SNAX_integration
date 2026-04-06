@@ -8,7 +8,7 @@
     parfor_N: 4
     parfor_K: 4
     block_size: 16
-    A_dtype: "fp8_e5m2"
+    A_dtype: "mxint8"
     B_dtype: "fp4_e2m1"
     quantize_mode: 0
     shared_format: 0

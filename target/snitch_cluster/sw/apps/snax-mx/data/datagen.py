@@ -25,6 +25,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__),
 from data_utils import format_scalar_definition, \
                        format_vector_definition  # noqa: E402
 
+_SCALE_FORMAT_MAP = {0: "UE8M0", 1: "UE7M1", 2: "UE6M2", 3: "UE5M3", 4: "UE4M4", 5: "UE3M5", 6: "UE2M6"}
+
 ###################################################################
 ###############    auxiliray functions   ##########################
 ###################################################################
@@ -38,11 +40,6 @@ def gen_channel_enable_CSR(channel_en_CSR, channel_en_bits):
 
     channel_en_CSR = [int(x) for x in channel_en_CSR][::-1]
     return channel_en_CSR
-
-
-#this function pad zero for data that cannot fill a 64 bit port
-def zero_padding(matrix_unpadded, pad_num):
-    pass
 
 
 
@@ -74,9 +71,11 @@ def data_file_emit(**kwargs):
     ###################data generation#####################
     #######################################################
     # TODO: make a switch to whether use random gen data or real workload
-    variance = 3
+    variance = 1
     A_fp32 = (np.random.randn(M, K) * variance ).astype(np.float32)
     B_fp32 = (np.random.randn(K, N) * variance ).astype(np.float32)
+    # A_fp32 = np.eye(K, N, dtype=np.float32)
+    #B_fp32 = np.random.uniform(low=-1.0, high=0.0, size=(M, K)).astype(np.float32)
     # A_fp32 = np.tile(np.arange(1, K+1), (M, 1)).astype(np.float32)
     # B_fp32 = np.tile(np.arange(1, N+1), (K, 1)).astype(np.float32)
     # A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
@@ -94,8 +93,14 @@ def data_file_emit(**kwargs):
     
     A_dtype = kwargs["A_dtype"]
     B_dtype = kwargs["B_dtype"]
-    A_quantized, exp_A, A_input = quantize.quantize_mx(A_fp32_padded, A_dtype, block_size=block_size, axis=1)
-    B_quantized, exp_B, B_input = quantize.quantize_mx(B_fp32_padded, B_dtype, block_size=block_size, axis=0)
+    share_format = kwargs["shared_format"]
+    data_str += [format_scalar_definition("const char*", "A_dtype", f'"{A_dtype}"')]
+    data_str += [format_scalar_definition("const char*", "B_dtype", f'"{B_dtype}"')]
+    data_str += [format_scalar_definition("uint32_t", "share_format", share_format)]
+    A_quantized, exp_A_readable, exp_A, A_input = quantize.quantize_mx_v2(A_fp32_padded, A_dtype, block_size=block_size, axis=1, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
+    B_quantized, exp_B_readable, exp_B, B_input = quantize.quantize_mx_v2(B_fp32_padded, B_dtype, block_size=block_size, axis=0, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
+    # A_quantized, exp_A, A_input = quantize.quantize_mx(A_fp32_padded, A_dtype, block_size=block_size, axis=1)
+    # B_quantized, exp_B, B_input = quantize.quantize_mx(B_fp32_padded, B_dtype, block_size=block_size, axis=0)
 
     #######################################################
     ################### CSR  settings #####################
@@ -360,8 +365,8 @@ def data_file_emit(**kwargs):
 
     # ---- Combined A+B scale (E8M0, biased by 127) ----
     # quantize_mx returns actual (unbiased) exponents; add 127 for E8M0 hardware format
-    exp_A_u8 = np.clip(exp_A + 127, 0, 255).astype(np.uint8)  # (m_padded, k_blocks)
-    exp_B_u8 = np.clip(exp_B + 127, 0, 255).astype(np.uint8)  # (k_blocks, n_padded)
+    exp_A_u8 = exp_A.astype(np.uint8)  # (m_padded, k_blocks)
+    exp_B_u8 = exp_B.astype(np.uint8)  # (k_blocks, n_padded)
 
     if stationary == output_stationary or stationary == input_stationary:
         loop = [(m, n, kb)
@@ -381,6 +386,8 @@ def data_file_emit(**kwargs):
         chunks.append(np.concatenate([a_sc, b_sc, np.zeros(pad, dtype=np.uint8)]))
     combined_scale = np.concatenate(chunks).view(np.int8)
     data_str += [format_vector_definition("int8_t", "scale", combined_scale)]
+    # data_str +=  [format_vector_definition("float", "scale_A_Readable", exp_A_readable.flatten())]
+    # data_str +=  [format_vector_definition("float", "scale_B_Readable", exp_B_readable.flatten())]
 
     # ---- D golden: A_quantized @ B_quantized, tile reorder (m_tiles, n_tiles, parfor_M, parfor_N) ----
     # D_golden = (A_quantized @ B_quantized).astype(np.float32)
@@ -388,36 +395,37 @@ def data_file_emit(**kwargs):
     # ---- D golden: simulate hardware truncating FP32 adder and tree reduction ----
     # Hardware FP32Adder truncates (discards guard bits) instead of rounding to nearest.
     # VectorSize products are reduced via a balanced binary tree, then added to the accumulator.
-    def fp32_add_truncate(a, b):
-        """FP32 add matching hardware FP32Adder: truncates guard bits (round-toward-zero)."""
-        result_f64 = np.float64(a) + np.float64(b)
-        if result_f64 == 0.0:
-            return np.float32(0.0)
-        r_f32 = np.float32(result_f64)
-        # If numpy rounded magnitude upward, subtract 1 ULP to simulate truncation
-        if abs(float(r_f32)) > abs(float(result_f64)):
-            bits = struct.unpack('I', struct.pack('f', float(r_f32)))[0]
-            mag = (bits & 0x7FFFFFFF) - 1
-            bits = (bits & 0x80000000) | (mag & 0x7FFFFFFF)
-            r_f32 = np.float32(struct.unpack('f', struct.pack('I', bits))[0])
-        return r_f32
+    # def fp32_add_truncate(a, b):
+    #     """FP32 add matching hardware FP32Adder: truncates guard bits (round-toward-zero)."""
+    #     result_f64 = np.float64(a) + np.float64(b)
+    #     if result_f64 == 0.0:
+    #         return np.float32(0.0)
+    #     r_f32 = np.float32(result_f64)
+    #     # If numpy rounded magnitude upward, subtract 1 ULP to simulate truncation
+    #     if abs(float(r_f32)) > abs(float(result_f64)):
+    #         bits = struct.unpack('I', struct.pack('f', float(r_f32)))[0]
+    #         mag = (bits & 0x7FFFFFFF) - 1
+    #         bits = (bits & 0x80000000) | (mag & 0x7FFFFFFF)
+    #         r_f32 = np.float32(struct.unpack('f', struct.pack('I', bits))[0])
+    #     return r_f32
 
-    def tree_reduce_truncate(vals):
-        """Balanced binary tree reduction using truncating FP32 adder."""
-        while len(vals) > 1:
-            vals = [fp32_add_truncate(vals[i], vals[i+1]) if i+1 < len(vals) else vals[i]
-                    for i in range(0, len(vals), 2)]
-        return vals[0]
+    # def tree_reduce_truncate(vals):
+    #     """Balanced binary tree reduction using truncating FP32 adder."""
+    #     while len(vals) > 1:
+    #         vals = [fp32_add_truncate(vals[i], vals[i+1]) if i+1 < len(vals) else vals[i]
+    #                 for i in range(0, len(vals), 2)]
+    #     return vals[0]
 
-    D_golden = np.zeros((m_padded, n_padded), dtype=np.float32)
-    for m in range(m_padded):
-        for n in range(n_padded):
-            acc = np.float32(0.0)
-            for k in range(0, k_aligned_blocksize, parfor_K):
-                products = [np.float32(A_quantized[m, k+v]) * np.float32(B_quantized[k+v, n])
-                            for v in range(parfor_K)]
-                acc = fp32_add_truncate(acc, tree_reduce_truncate(products))
-            D_golden[m, n] = acc
+    # D_golden = np.zeros((m_padded, n_padded), dtype=np.float32)
+    # for m in range(m_padded):
+    #     for n in range(n_padded):
+    #         acc = np.float32(0.0)
+    #         for k in range(0, k_aligned_blocksize, parfor_K):
+    #             products = [np.float32(A_quantized[m, k+v]) * np.float32(B_quantized[k+v, n])
+    #                         for v in range(parfor_K)]
+    #             acc = fp32_add_truncate(acc, tree_reduce_truncate(products))
+    #         D_golden[m, n] = acc
+    D_golden = (A_quantized @ B_quantized).astype(np.float32)
     D_tiled = (D_golden
                .reshape(m_tiles, parfor_M, n_tiles, parfor_N)
                .transpose(0, 2, 1, 3)

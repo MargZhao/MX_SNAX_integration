@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-# Copyright 2025 KU Leuven.
 # Licensed under the Apache License, Version 2.0, see LICENSE for details.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -14,15 +13,15 @@ Supported dtypes (as strings):
   'fp6_e2m3'  - FP6 E2M3 (bias=1,  max=7.5)
   'fp4_e2m1'  - FP4 E2M1 (bias=1,  max=6)
   'mxint8'    - MXINT8: 1S+7M, implicit scale 2^-6, range ≈ [-1.984, 1.984]
-  'int8'      - Signed 8-bit integer [-128, 127] (global affine)
+  do not use this: 'int8'      - Signed 8-bit integer [-128, 127] (global affine)
 
-Public API:
-  quantize(arr, dtype, packed=False)
-      FP formats  -> (q_float32, q_raw_uint8)
-      'int8'      -> (q_float32, scale, q_raw_int8)
-
+functions:
   quantize_mx(arr, dtype, block_size, axis, packed=False)
       -> (q_float32, exp_shared, q_raw)
+
+  quantize_mx_v2(arr, dtype, block_size, axis, packed=False, scale_format='e8m0')
+      scale_format: 'e8m0','e7m1','e6m2','e5m3','e4m4','e3m5','e2m6','e1m7','e0m8'
+      -> (q_float32, scale_shared, scale_raw_uint8, q_raw)
 
   packed=False: each element occupies one uint8 (bits in LSBs).
   packed=True:  tight bit-packing per row —
@@ -383,6 +382,118 @@ class MXINT8:
 
 
 # ---------------------------------------------------------------------------
+# (NEW) Generalized shared scale format support (E8M0 through E0M8)
+# ---------------------------------------------------------------------------
+
+class ScaleFormat:
+    """无符号 8-bit 共享 scale 格式（ebits + mbits = 8，无符号位）。
+
+    支持的格式（ebits, mbits）：
+      E8M0(8,0), E7M1(7,1), E6M2(6,2), E5M3(5,3), E4M4(4,4),
+      E3M5(3,5), E2M6(2,6), E1M7(1,7), E0M8(0,8)
+
+    NaN/Inf 规则：
+      E8M0：raw=255 → NaN（OCP MX 标准），saturate_raw=254
+      E7M1-E0M8：无 NaN，所有 256 个 bit pattern 均为有效正数，saturate_raw=255
+    """
+
+    def __init__(self, ebits: int, mbits: int):
+        assert ebits + mbits == 8, "ebits + mbits must equal 8"
+        assert ebits >= 0 and mbits >= 0
+        self.ebits = ebits
+        self.mbits = mbits
+
+        if ebits == 0:                          # E0M8：纯定点，无指数位
+            self.bias = 0
+            self.max_val = 255.0 / 128.0        # 255 × 2^(-7)
+            self.saturate_raw = 255
+        elif mbits == 0:                        # E8M0：OCP MX 标准，raw=255=NaN
+            self.bias = 127
+            self.max_val = 2.0 ** 127
+            self.saturate_raw = 254             # raw=255 reserved for NaN
+        else:                                   # E7M1 ~ E1M7：全1指数有效，无 NaN
+            self.bias     = (1 << (ebits - 1)) - 1
+            max_exp_b     = (1 << ebits) - 1    # all-ones exponent is VALID (not NaN)
+            max_mant      = (1 << mbits)  - 1
+            self.max_val  = (2.0 ** (max_exp_b - self.bias)) * (1.0 + max_mant / (2 ** mbits))
+            self.saturate_raw = (max_exp_b << mbits) | max_mant  # always 0xFF = 255
+
+    def _raw_to_float(self, raw: int) -> float:
+        """将 8-bit 无符号 raw 值解码为 float。"""
+        if self.ebits == 0:                     # E0M8
+            return raw / 128.0
+        if self.mbits == 0:                     # E8M0
+            return 2.0 ** (raw - self.bias)
+        # 通用 ExMy
+        exp_biased = raw >> self.mbits
+        mant_bits  = raw & ((1 << self.mbits) - 1)
+        if exp_biased == 0:                     # 次正规
+            return (2.0 ** (1 - self.bias)) * (mant_bits / (2 ** self.mbits))
+        return (2.0 ** (exp_biased - self.bias)) * (1.0 + mant_bits / (2 ** self.mbits))
+
+    def quantize(self, ideal_scale: float) -> tuple:
+        """将理想 scale 值量化到本格式。
+
+        Returns:
+            (quantized_float, raw_uint8): 量化后的 float 值和 8-bit 原始编码
+        """
+        if ideal_scale <= 0.0:
+            return 0.0, 0
+
+        if ideal_scale >= self.max_val:         # 饱和（含上溢保护）
+            sat_float = self._raw_to_float(self.saturate_raw)
+            return sat_float, self.saturate_raw
+
+        if self.ebits == 0:                     # E0M8：定点，步长 1/128
+            raw = int(np.clip(int(np.round(ideal_scale * 128.0)), 0, 255))
+            return raw / 128.0, raw
+
+        if self.mbits == 0:                     # E8M0：纯 2 的幂
+            exp = int(np.floor(np.log2(ideal_scale + 1e-45)))
+            raw = int(np.clip(exp + self.bias, 0, self.saturate_raw))
+            return 2.0 ** (raw - self.bias), raw
+
+        # 通用 ExMy（ebits>0, mbits>0）
+        exp       = int(np.floor(np.log2(ideal_scale + 1e-45)))
+        exp_biased = exp + self.bias
+
+        if exp_biased <= 0:                     # 次正规
+            subnorm_unit = 2.0 ** (1 - self.bias) / (2 ** self.mbits)
+            mant = int(np.round(ideal_scale / subnorm_unit))
+            if mant >= (1 << self.mbits):       # 进位 → 最小正规数
+                raw = 1 << self.mbits           # exp_biased=1, mant=0
+            else:
+                mant = int(np.clip(mant, 0, (1 << self.mbits) - 1))
+                raw  = mant
+            return self._raw_to_float(raw), raw
+
+        # 正规数
+        frac = ideal_scale / (2.0 ** exp)
+        mant = int(np.round((frac - 1.0) * (2 ** self.mbits)))
+        if mant >= (1 << self.mbits):           # 进位
+            mant = 0
+            exp_biased += 1
+        max_exp_b = (1 << self.ebits) - 1
+        if exp_biased > max_exp_b:              # 上溢 → saturate（max_val 应已拦截）
+            return self._raw_to_float(self.saturate_raw), self.saturate_raw
+        raw = (exp_biased << self.mbits) | mant
+        return self._raw_to_float(raw), raw
+
+
+VALID_SCALE_FORMATS = {
+    'UE8M0': ScaleFormat(8, 0),   # OCP MX 默认（纯 2 的幂，E8M0）
+    'UE7M1': ScaleFormat(7, 1),
+    'UE6M2': ScaleFormat(6, 2),
+    'UE5M3': ScaleFormat(5, 3),
+    'UE4M4': ScaleFormat(4, 4),
+    'UE3M5': ScaleFormat(3, 5),
+    'UE2M6': ScaleFormat(2, 6),
+    'UE1M7': ScaleFormat(1, 7),
+    'UE0M8': ScaleFormat(0, 8),
+}
+
+
+# ---------------------------------------------------------------------------
 # Internal dispatch table
 # ---------------------------------------------------------------------------
 
@@ -406,6 +517,15 @@ _EMAX = {
     'fp6_e2m3': 2,    # max unbiased exp = 3 - 1
     'fp4_e2m1': 2,    # max unbiased exp = 3 - 1
     'mxint8':   0,    # values in [-1.984, 1.984]; shared_exp = floor(log2(max_abs))
+}
+
+_AMAX = {
+    'fp8_e4m3': 57344,
+    'fp8_e5m2': 448,
+    'fp6_e3m2': 7.5,
+    'fp6_e2m3': 28.0,
+    'fp4_e2m1': 6.0,
+    'mxint8':   1.984375,
 }
 
 # Logical bit width of each element format (before any bit-packing)
@@ -546,6 +666,28 @@ def _find_shared_exp(block: np.ndarray, dtype: str) -> float:
     return float(np.clip(shared_exp, -127, 127))
 
 
+# (NEW) Generalized scale computation supporting any ScaleFormat; old _find_shared_exp kept
+def _compute_block_scale(block: np.ndarray, dtype: str, scale_fmt: ScaleFormat) -> tuple:
+    """Compute and quantize the shared scale for one block using the given ScaleFormat.
+
+    For FP element formats:
+        ideal_scale = 2^((log2(max_abs)) - EMAX_elem)
+    Returns:
+        (scale_float, scale_raw): quantized scale as float and raw 8-bit encoding
+    """
+    max_abs = float(np.max(np.abs(block)))
+    if max_abs == 0.0:
+        return 0.0, 0
+    if dtype == 'int8':
+        ideal_scale = max_abs / 127.0
+    else:
+        # if scale_fmt == 'UE8M0':
+        #     ideal_scale = 2.0 ** (float(np.floor(np.log2(max_abs + 1e-30))) - _EMAX[dtype])
+        # else:
+        ideal_scale = 2.0 ** (float(np.log2(max_abs + 1e-30)) - _EMAX[dtype])
+    return scale_fmt.quantize(ideal_scale)
+
+
 def _quantize_block(block: np.ndarray, dtype: str, shared_exp: float):
     """Normalize a block by 2^shared_exp, quantize, then denormalize.
 
@@ -555,6 +697,37 @@ def _quantize_block(block: np.ndarray, dtype: str, shared_exp: float):
                                       For int8 the raw array has dtype int8.
     """
     scale = 2.0 ** shared_exp
+    norm = block / scale
+
+    if dtype == 'int8':
+        q_int8 = np.round(norm).clip(-128, 127).astype(np.int8)
+        return (q_int8.astype(np.float32) * scale), q_int8
+
+    cls = _DATA_CLASSES[dtype]
+    q_float = np.empty(block.shape, dtype=np.float32)
+    raw = np.empty(block.shape, dtype=np.uint8)
+    for i, val in enumerate(norm.flat):
+        obj = cls().quantize(float(val))
+        q_float.flat[i] = obj.to_float() * scale
+        raw.flat[i] = obj.pack()
+    return q_float, raw
+
+
+# (NEW) Accepts a scale value directly instead of an exponent; old _quantize_block kept
+def _quantize_block_by_scale(block: np.ndarray, dtype: str, scale: float) -> tuple:
+    """Normalize a block by `scale`, quantize, then denormalize.
+
+    Identical to _quantize_block but takes a scale value (float) instead of a
+    shared exponent, allowing non-power-of-2 scales from generalized ScaleFormats.
+
+    Returns:
+        q_float (np.ndarray float32): dequantized block values.
+        raw     (np.ndarray uint8):   per-element raw bit patterns (int8 for dtype='int8').
+    """
+    if scale == 0.0:
+        zero_raw = np.zeros(block.shape, dtype=np.int8 if dtype == 'int8' else np.uint8)
+        return np.zeros(block.shape, dtype=np.float32), zero_raw
+
     norm = block / scale
 
     if dtype == 'int8':
@@ -650,6 +823,97 @@ def quantize_mx(
         q_raw = raw_arr
 
     return q_arr, exp_shared, q_raw
+
+
+# (NEW) Supports arbitrary scale format; old quantize_mx kept
+def quantize_mx_v2(
+    arr: np.ndarray,
+    dtype: str,
+    block_size: int = 32,
+    axis: int = 1,
+    packed: bool = False,
+    scale_format: str = 'UE8M0',
+) -> tuple:
+    """MX block quantization with generalized 8-bit unsigned shared scale format.
+
+    Identical to quantize_mx except:
+      - scale is not restricted to powers-of-2 (E8M0); any format in
+        VALID_SCALE_FORMATS is supported (e8m0 through e0m8).
+      - Returns a 4-tuple instead of 3-tuple, adding scale_raw.
+
+    Args:
+        arr:          2D float32 input array of shape (Row, Col).
+        dtype:        Element format. One of VALID_DTYPES.
+        block_size:   Number of elements per block along the chosen axis.
+        axis:         1 -> row-wise blocks; 0 -> column-wise blocks (default).
+        packed:       If True, tightly bit-pack the raw element output (FP4/FP6).
+        scale_format: Shared scale encoding. One of:
+                      'e8m0','e7m1','e6m2','e5m3','e4m4','e3m5','e2m6','e1m7','e0m8'
+
+    Returns:
+        q_arr        (np.ndarray float32, same shape as arr): dequantized values.
+        scale_shared (np.ndarray float32): quantized scale value per block (float).
+        scale_raw    (np.ndarray uint8): hardware-ready biased 8-bit encoding of scale
+                     per block. Bit layout (directly feeds hardware):
+                       E8M0  : raw = biased_exp (exp + 127); raw=255 reserved for NaN.
+                       ExMy  : raw = (biased_exp << mbits) | mantissa_bits;
+                               biased_exp = unbiased_exp + bias, bias = 2^(ebits-1)-1.
+                       E0M8  : raw = round(scale * 128); value = raw / 128 (fixed-point).
+        q_raw        (np.ndarray): per-element raw quantized encoding
+                     (same layout rules as quantize_mx).
+    """
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.ndim != 2:
+        raise ValueError(f"quantize_mx_v2 expects a 2D array, got shape {arr.shape}")
+    if dtype not in VALID_DTYPES:
+        raise ValueError(f"Unknown dtype {dtype!r}. Choose from {VALID_DTYPES}")
+    if scale_format not in VALID_SCALE_FORMATS:
+        raise ValueError(f"Unknown scale_format {scale_format!r}. Choose from {list(VALID_SCALE_FORMATS)}")
+
+    scale_fmt = VALID_SCALE_FORMATS[scale_format]
+    Row, Col = arr.shape
+    raw_dtype = np.int8 if dtype == 'int8' else np.uint8
+    q_arr   = np.zeros_like(arr)
+    raw_arr = np.zeros((Row, Col), dtype=raw_dtype)
+
+    if axis == 1:
+        n_blocks     = int(np.ceil(Col / block_size))
+        scale_shared = np.zeros((Row, n_blocks), dtype=np.float32)
+        scale_raw    = np.zeros((Row, n_blocks), dtype=np.uint8)
+        for i in range(Row):
+            for b in range(n_blocks):
+                j0 = b * block_size
+                j1 = min(j0 + block_size, Col)
+                block = arr[i, j0:j1]
+                sc_f, sc_r = _compute_block_scale(block, dtype, scale_fmt)
+                scale_shared[i, b] = sc_f
+                scale_raw[i, b]    = sc_r
+                q_arr[i, j0:j1], raw_arr[i, j0:j1] = _quantize_block_by_scale(block, dtype, sc_f)
+
+    elif axis == 0:
+        n_blocks     = int(np.ceil(Row / block_size))
+        scale_shared = np.zeros((n_blocks, Col), dtype=np.float32)
+        scale_raw    = np.zeros((n_blocks, Col), dtype=np.uint8)
+        for b in range(n_blocks):
+            i0 = b * block_size
+            i1 = min(i0 + block_size, Row)
+            for j in range(Col):
+                block = arr[i0:i1, j]
+                sc_f, sc_r = _compute_block_scale(block, dtype, scale_fmt)
+                scale_shared[b, j] = sc_f
+                scale_raw[b, j]    = sc_r
+                q_arr[i0:i1, j], raw_arr[i0:i1, j] = _quantize_block_by_scale(block, dtype, sc_f)
+
+    else:
+        raise ValueError(f"axis must be 0 or 1, got {axis}")
+
+    if packed and dtype not in ('fp8_e4m3', 'fp8_e5m2', 'int8'):
+        packed_rows = [_pack_raw_1d(raw_arr[i], dtype) for i in range(Row)]
+        q_raw = np.stack(packed_rows, axis=0)
+    else:
+        q_raw = raw_arr
+
+    return q_arr, scale_shared, scale_raw, q_raw
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +1081,60 @@ def main():
     print()
     print("All checks passed.")
 
+def verification(variance = 1, A_dtype='mxint8', B_dtype='fp4_e2m1', block_size =32):
+    A_fp32 = (np.random.randn(64, 64) * variance ).astype(np.float32)
+    B_fp32 = (np.random.randn(64, 64) * variance ).astype(np.float32)
+    A_quantized, exp_A_readable, exp_A, A_input = quantize_mx_v2(A_fp32, A_dtype, block_size=block_size, axis=1, scale_format='UE8M0')
+    B_quantized, exp_B_readable, exp_B, B_input = quantize_mx_v2(B_fp32, B_dtype, block_size=block_size, axis=0, scale_format='UE8M0')
+    D_golden = (A_fp32 @ B_fp32).astype(np.float32)
+    D_quantized = (A_quantized @ B_quantized)
+    # --- 1. 基础误差统计 ---
+    abs_diff = np.abs(D_golden - D_quantized)
+    mse = np.mean(abs_diff ** 2)
+    max_abs_error = np.max(abs_diff)
+    mean_abs_error = np.mean(abs_diff)
+
+    # --- 2. 相对误差 (加个极小数 1e-9 防止分母为 0) ---
+    rel_diff = abs_diff / (np.abs(D_golden) + 1e-9)
+    max_rel_error = np.max(rel_diff)
+    mean_rel_error = np.mean(rel_diff)
+
+    # --- 3. 余弦相似度 (衡量方向一致性) ---
+    cos_sim = np.dot(D_golden.flatten(), D_quantized.flatten()) / (
+        np.linalg.norm(D_golden) * np.linalg.norm(D_quantized)
+    )
+
+    # --- 打印综合报告 ---
+    print("\n" + "="*30)
+    print("🎯 量化对齐评估报告 🎯")
+    print("="*30)
+    print(f"MSE (均方误差):     {mse:.6f}")
+    print(f"余弦相似度:         {cos_sim:.6f} (越接近1.0越完美)")
+    print("-" * 30)
+    print(f"最大绝对误差 (Max): {max_abs_error:.6f}")
+    print(f"平均绝对误差 (Avg): {mean_abs_error:.6f}")
+    print(f"最大相对误差:       {max_rel_error:.2%}")
+    print(f"平均相对误差:       {mean_rel_error:.2%}")
+    print("="*30)
+
+    # --- 4. 重点突破：抓出误差最大的 Top 5 坐标 ---
+    # 这对于定位你之前遇到的 "符号翻转" 或 "除以64" 的硬件 Bug 非常有用
+    print("\n🔍 误差最大的前 5 个矩阵元素:")
+    # 找到绝对误差从大到小的排序索引
+    flat_indices = np.argsort(abs_diff, axis=None)[::-1]
+    indices = np.unravel_index(flat_indices, abs_diff.shape)
+
+    for i in range(min(5, D_golden.size)):
+        r, c = indices[0][i], indices[1][i]
+        gold = D_golden[r, c]
+        quant = D_quantized[r, c]
+        diff = abs_diff[r, c]
+        print(f"坐标 [{r}, {c}]: Golden = {gold:>9.4f} | Quantized = {quant:>9.4f} | 绝对差 = {diff:.4f}")
+    
+
+
 
 if __name__ == "__main__":
-    main()
+    # main()
+    verification(variance = 1, A_dtype='mxint8', B_dtype='mxint8', block_size =16)
+    
