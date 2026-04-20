@@ -37,6 +37,15 @@ void set_mx_streamer_csr(
     int32_t delta_local_o,
     int32_t* Oslstride, int32_t* Otlbound, int32_t* Otlstride);
 
+// Configure WRITER_1 (SHOut – output shared scale) streamer.
+// Only needed when quantize_mode >= 2 (BFP requantization output).
+// delta_local_o_scale: byte offset from snrt_l1_next() for output scale buffer.
+// SHOutslstride[S_STRIDE_NUM_WRITER_1], SHOuttlbound[T_BOUND_NUM_WRITER_1],
+// SHOuttlstride[T_STRIDE_NUM_WRITER_1]: streamer loop parameters from data.h.
+void set_mx_shout_streamer_csr(
+    int32_t delta_local_o_scale,
+    int32_t* SHOutslstride, int32_t* SHOuttlbound, int32_t* SHOuttlstride);
+
 // Trigger streamer
 inline void set_mx_streamer_start() { csrw_ss(STREAMER_START_CSR, 1); }
 
@@ -58,6 +67,8 @@ uint32_t read_mx_streamer_perf_counter();
 // Read MX accelerator performance counter (read-only CSR)
 uint32_t read_mx_perf_counter();
 
-// Compare output vs golden, return number of mismatches
+// Compare output vs golden, return number of mismatches.
+// is_fp32 = 1: decode each word as fp32 and print its value.
+// is_fp32 = 0: print raw 0x%08x (use for requantized int8/fp6/fp8 output).
 uint32_t check_mx_result(uint32_t* output, uint32_t* output_golden,
-                         int32_t out_len);
+                         int32_t out_len, int is_fp32);

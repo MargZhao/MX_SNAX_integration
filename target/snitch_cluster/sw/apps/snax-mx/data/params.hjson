@@ -1,18 +1,22 @@
 {
     //array_shape: 1
     //data_type: 0
-    K: 8
-    N: 8
+    K: 32
+    N: 16
     M: 8
     parfor_M: 4
     parfor_N: 4
     parfor_K: 4
     block_size: 16
-    A_dtype: "mxint8"
-    B_dtype: "fp4_e2m1"
-    quantize_mode: 0
-    shared_format: 0
+    A_dtype: "fp6_e2m3"
+    B_dtype: "mxint8"
+    //0:fp32, 1:bf16, 2: e5m2, 3: e4m3, 4:mxint8, 4: e3m2, 5: e2m3
+    quantize_mode: 2
+    shared_format: 3
     stationary: 0
+    // use_hw_gemm: 0 = matmul on dequantized values (fast, software reference)
+    //              1 = hw_snax_gemm (hardware-accurate BFP_PE simulation)
+    use_hw_gemm: 0
     //quantization_enable: 0
     //channel_en_C: 1
     //stationary: 2

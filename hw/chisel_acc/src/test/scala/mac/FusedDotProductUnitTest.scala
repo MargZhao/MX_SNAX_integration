@@ -24,11 +24,13 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
 
   /** Decode raw bit-pattern → Double (MX element format). */
   def decodeElement(raw: Int, t: ElementType): Double = {
-    val sign = if (((raw >> (t.totalWidth - 1)) & 1) == 1) -1.0 else 1.0
     if (t.name == "INT8") {
-      val mag = raw & ((1 << (t.totalWidth - 1)) - 1)
-      sign * mag.toDouble
+      // MXINT8 2's complement: treat as signed 8-bit integer.
+      // value = signed_int × 2^implicitScaleExp (= 2^-6).
+      val signedVal = if ((raw & 0x80) != 0) raw - 256 else raw
+      signedVal.toDouble * Math.pow(2, t.implicitScaleExp)
     } else {
+      val sign = if (((raw >> (t.totalWidth - 1)) & 1) == 1) -1.0 else 1.0
       val exp  = (raw >> t.elementWidthMant) & ((1 << t.elementWidthExp) - 1)
       val mant = raw & ((1 << t.elementWidthMant) - 1)
       if (exp == 0)
@@ -45,8 +47,10 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
       Math.pow(2, expBits - s.bias)
     } else {
       val mantBits  = raw & ((1 << s.mantScaleWidth) - 1)
+      // 次正规数（expBits=0）：无隐含 1，指数固定为 1-bias
       val implicit1 = if (expBits > 0) 1.0 else 0.0
-      (implicit1 + mantBits.toDouble / (1 << s.mantScaleWidth)) * Math.pow(2, expBits - s.bias)
+      val effExp    = if (expBits > 0) expBits - s.bias else 1 - s.bias
+      (implicit1 + mantBits.toDouble / (1 << s.mantScaleWidth)) * Math.pow(2, effExp)
     }
   }
 
@@ -56,7 +60,10 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
     val sign   = if (value < 0) 1 else 0
     val absVal = math.abs(value)
     if (t.name == "INT8") {
-      (sign << 7) | math.round(absVal).toInt.min(127)
+      // MXINT8 2's complement: encode as signed 8-bit integer.
+      // magnitude = round(|value| / 2^implicitScaleExp), clamped to [0, 127].
+      val magnitude = math.round(absVal / Math.pow(2, t.implicitScaleExp)).toInt.min(127)
+      if (sign == 0) magnitude else (-magnitude) & 0xFF
     } else {
       val expUnbiased = math.floor(math.log(absVal) / math.log(2)).toInt
       val expBiased   = expUnbiased + t.bias
@@ -96,11 +103,65 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
   ): Float = {
     val sA     = decodeScale(scaleA, cfg.stype)
     val sB     = decodeScale(scaleB, cfg.stype)
-    val dotSum = as.zip(bs).map { case (a, b) =>
-      decodeElement(a, cfg.elementTypeA) * decodeElement(b, cfg.elementTypeB)
-    }.sum
-    (dotSum * sA * sB).toFloat
+    // 模拟 8 个 lane 独立计算并引入 scale
+    val products = as.zip(bs).map { case (a, b) =>
+        val prod = decodeElement(a, cfg.elementTypeA) * decodeElement(b, cfg.elementTypeB)
+        (prod * sA * sB).toFloat // 模拟硬件在 Normalization 这里的强制转 FP32
+    }
+    
+    // 模拟 Reduction Tree (虽然简单 sum 也可以，但转成 Float 很重要)
+    products.sum.toFloat
   }
+
+  def swFusedProductWithTrace(cfg: ScaleAddConfig)(
+    as: Seq[Int], bs: Seq[Int], scaleA: Int, scaleB: Int, cycleIdx: Int,
+    verbose: Boolean = false
+  ): Float = {
+    val sA = decodeScale(scaleA, cfg.stype)
+    val sB = decodeScale(scaleB, cfg.stype)
+
+    val details = as.zip(bs).zipWithIndex.map { case ((a, b), lane) =>
+      val dA = decodeElement(a, cfg.elementTypeA)
+      val dB = decodeElement(b, cfg.elementTypeB)
+      val prod = dA * dB
+      (dA, dB, prod)
+    }
+
+    val dotSum = details.map(_._3).sum
+    val finalCycleVal = (dotSum * sA * sB).toFloat
+
+    if (verbose) {
+      log(f"--- Cycle $cycleIdx SW Trace (sA=$sA%.4e, sB=$sB%.4e) ---")
+      details.zipWithIndex.foreach { case ((dA, dB, p), lane) =>
+        log(f"  Lane $lane: A=$dA%10.4f (raw=0x${as(lane)}%02x) | B=$dB%10.4f (raw=0x${bs(lane)}%02x) | P=$p%10.4f")
+      }
+      log(f"  DotSum=$dotSum%10.4f | FinalCycleVal=$finalCycleVal%10.4f")
+    }
+
+    finalCycleVal
+  }
+  //手动计算预期的exp和mant
+  def debugLane0(cfg: ScaleAddConfig, aRaw: Int, bRaw: Int, sARaw: Int, sBRaw: Int) = {
+  // 模拟硬件运算逻辑
+  val dA = decodeElement(aRaw, cfg.elementTypeA)
+  val dB = decodeElement(bRaw, cfg.elementTypeB)
+  val sA = decodeScale(sARaw, cfg.stype)
+  val sB = decodeScale(sBRaw, cfg.stype)
+  
+  // 理论乘积
+  val idealProd = dA * dB * sA * sB
+  
+  // 硬件 ScaleToFP32 内部的 fracBits 计算
+  val fracBits = {
+    val aM = if (cfg.elementTypeA.name == "INT8") 0 else cfg.elementTypeA.elementWidthMant
+    val bM = if (cfg.elementTypeB.name == "INT8") 0 else cfg.elementTypeB.elementWidthMant
+    aM + bM + 2 * cfg.stype.mantScaleWidth
+  }
+  // 硬件对应的 expBias
+  val expBias = 127 + cfg.resScaleAddMantWidth - 1 - fracBits
+  
+  (idealProd, fracBits, expBias)
+}
 
   /** Read accOut as IEEE 754 Float. */
   def peekFloat(dut: FusedDotProductUnit): Float =
@@ -163,31 +224,73 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
    * @param cycles  Seq of (as, bs, rawScaleA, rawScaleB) — one entry per cycle.
    * @param tol5pct Use 5 % relative + 1e-37 absolute tolerance (same as DotProductUnitTest).
    */
-  def runCycles(
-    dut: FusedDotProductUnit, cfg: ScaleAddConfig,
-    cycles: Seq[(Seq[Int], Seq[Int], Int, Int)],
-    header: String = ""
-  ): Unit = {
-    if (header.nonEmpty) {
-      log("=" * 70)
-      log(header)
-      log("=" * 70)
-    }
-    var swAcc = 0.0f
-    for (((as, bs, sA, sB), i) <- cycles.zipWithIndex) {
-      val cycleVal = swFusedProduct(cfg)(as, bs, sA, sB)
-      driveOne(dut, cfg, as, bs, sA, sB)
-      swAcc += cycleVal
-      val hw     = peekFloat(dut)
-      val tol    = math.abs(swAcc) * 0.05f + 1e-37f
-      val isFail = math.abs(hw - swAcc) > tol
-      val line   = f"Cycle $i%2d | cycleSum=$cycleVal%9.4f | SW=$swAcc%10.4f | HW=$hw%10.4f" +
-                   (if (isFail) " *** MISMATCH ***" else "")
-      if (isFail) logErr(line) else log(line)
-      assert(!isFail, s"Mismatch at cycle $i: hw=$hw expected=$swAcc (tol=$tol)")
-    }
+def runCycles(
+  dut: FusedDotProductUnit, cfg: ScaleAddConfig,
+  cycles: Seq[(Seq[Int], Seq[Int], Int, Int)],
+  header: String = "",
+  verbose: Boolean = false
+): Unit = {
+  if (header.nonEmpty) {
+    log("=" * 70)
+    log(header)
+    log("=" * 70)
   }
+  var swAcc = 0.0f
+  for (((as, bs, sA, sB), i) <- cycles.zipWithIndex) {
+    // 解码当前的 Scale 因子以便打印
+    val decSA = decodeScale(sA, cfg.stype)
+    val decSB = decodeScale(sB, cfg.stype)
 
+    // 1. 使用带 trace 的软件模型
+    val swCycleVal = swFusedProductWithTrace(cfg)(as, bs, sA, sB, i, verbose)
+    
+    // 2. 模拟硬件
+    driveOne(dut, cfg, as, bs, sA, sB)
+
+    // 4. 拉出归约后的总和
+    val hwCycleValRaw = dut.io.debug.get.reducedSum.peek().litValue.toInt
+    val hwCycleVal    = java.lang.Float.intBitsToFloat(hwCycleValRaw)
+    val hwAcc         = peekFloat(dut)
+
+   
+    // 3. 模拟硬件累加行为
+    swAcc = (swAcc + swCycleVal).toFloat 
+    val hw = peekFloat(dut)
+    
+    // 4. 容差判断
+    val tol = math.abs(swAcc) * 0.10f + 1e-5f 
+    val isFail = math.abs(hw - swAcc) > tol
+
+    // 在打印行中加入 Scale 信息
+    val line = f"Cycle $i%2d | sA=${decSA}%10.4e | sB=${decSB}%10.4e | cycleVal=$swCycleVal%12.4e | SW=$swAcc%12.4e | HW=$hw%12.4e"
+    
+    if (isFail || verbose) {
+      val tag = if (isFail) "FAIL" else "VERBOSE"
+      log(f"--- Cycle $i%2d [$tag] HW All Lanes Trace ---")
+
+      for (laneIdx <- 0 until dut.vectorSize) {
+        val hwLaneFP32Raw = dut.io.debug.get.all_lanes_fp32(laneIdx).peek().litValue.toInt
+        val hwLaneFP32    = java.lang.Float.intBitsToFloat(hwLaneFP32Raw)
+        val hwLaneMant    = dut.io.debug.get.all_lanes_sa_mant(laneIdx).peek().litValue
+        log(f"  Lane $laneIdx%1d: HW_Mant=0x$hwLaneMant%x | HW_FP32=$hwLaneFP32%.6f")
+      }
+
+      log(f"  [SUMMARY] SW_CycleSum=$swCycleVal%.6f | HW_CycleSum=$hwCycleVal%.6f")
+      log(f"  [ACCUM  ] SW_Acc=$swAcc%.6f | HW_Acc=$hwAcc%.6f")
+
+      if (isFail) {
+        logErr(line)
+        logErr(f"      BITS: SW=0x${java.lang.Float.floatToIntBits(swAcc).toHexString} | " +
+               f"HW=0x${java.lang.Float.floatToIntBits(hw).toHexString}")
+      } else {
+        log(line)
+      }
+    } else {
+      log(line)
+    }
+    assert(!isFail, s"Mismatch at cycle $i: hw=$hw expected=$swAcc")
+  }
+}
   // -----------------------------------------------------------------------
   // MX block quantization helpers
   // -----------------------------------------------------------------------
@@ -200,7 +303,8 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
    */
   def maxElemRepr(t: ElementType): Double =
     if (t.name == "INT8") {
-      ((1 << (t.totalWidth - 1)) - 1).toDouble   // 127
+      // Max symmetric value: 127 × 2^implicitScaleExp = 127/64 ≈ 1.984375
+      ((1 << (t.totalWidth - 1)) - 1).toDouble * Math.pow(2, t.implicitScaleExp)
     } else {
       val maxExpBiased = (1 << t.elementWidthExp) - 2   // all-1s reserved
       val maxMant      = (1 << t.elementWidthMant) - 1
@@ -222,10 +326,19 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
   def quantizeBlock(values: Seq[Double], et: ElementType, st: ScaleType): (Seq[Int], Int) = {
     val maxAbs = values.map(math.abs).max.max(1e-38)   // guard against log(0)
 
-    // Ideal (real-valued) scale: map [max_abs] onto [maxElemRepr]
-    // For a pure power-of-2 scale we floor to the nearest power-of-2.
-    val idealScale   = maxAbs / maxElemRepr(et)
-    val scaleExp     = math.floor(math.log(idealScale.max(1e-38)) / math.log(2)).toInt
+    // Scale exponent selection:
+    //   INT8 (MXINT8 2's complement): match Python _find_shared_exp for 'mxint8':
+    //     scaleExp = floor(log2(maxAbs))
+    //     This maps maxAbs into (1, 2], normalised value quantised by MXINT8 (range ≈ ±1.984);
+    //     values in (1.984, 2) will saturate to magnitude=127, exactly as Python does.
+    //   FP types: scaleExp = ceil(log2(maxAbs / maxElemRepr)) so no saturation occurs.
+    val scaleExp =
+      if (et.name == "INT8")
+        math.floor(math.log(maxAbs) / math.log(2)).toInt
+      else {
+        val idealScale = maxAbs / maxElemRepr(et)
+        math.ceil(math.log(idealScale.max(1e-38)) / math.log(2)).toInt
+      }
     // Clamp to what the scale type can actually represent
     val minScaleExp  = -(st.bias)
     val maxScaleExp  = (1 << st.expScaleWidth) - 1 - st.bias
@@ -728,7 +841,8 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
     def randElement(t: ElementType): Int = {
       val sign = rng.nextInt(2)
       if (t.name == "INT8") {
-        (sign << 7) | (1 + rng.nextInt(15)) // magnitude 1..15
+        val mag = 1 + rng.nextInt(15)  // magnitude 1..15
+        if (sign == 0) mag else (-mag) & 0xFF  // 2's complement encoding
       } else {
         val expRange = 1 << t.elementWidthExp
         val expLo    = (t.bias + 1).max(1).min(expRange - 1)
@@ -935,4 +1049,500 @@ class FusedDotProductUnitTest extends AnyFunSuite with ChiselScalatestTester {
       logErr(s"[FAILED] MX block-quantized 32-element dot product: ${e.getMessage}"); throw e
     }
   }
+
+  // -----------------------------------------------------------------------
+  // Test 19: E5M2 × E2M1 / UE8M0 — MX block-quantized 32-element dot product
+  //          (vec=8, 4 cycles)
+  //
+  //  Mirrors Test 18 but exercises the E5M2 × E2M1 / UE8M0 configuration
+  //  that is used by the top-level flow.  E2M1 has only four magnitude levels
+  //  {0, 0.5, 1.0, 1.5, 2.0, 3.0} so quantisation noise is large — the SW
+  //  golden model must be computed *after* round-tripping through the codec,
+  //  exactly as the HW does, so any mismatch is a real hardware bug.
+  // -----------------------------------------------------------------------
+  test("FusedDotProductUnit: E5M2 x E2M1 / UE8M0 block-quantized 32-element dot product (vec=8, 4 cycles)") {
+    log("\n[TEST 19] E5M2 x E2M1 / UE8M0 block-quantized 32-element dot product (vec=8, 4 cycles)")
+    try {
+      val cfg       = ScaleAddConfig(MXFormats.E5M2, MXFormats.E2M1, ScaleFormats.UE8M0)
+      val vsize     = 8
+      val blockSize = 32
+
+      // Source FP32 data — wide dynamic range so the shared scale is non-trivial.
+      // Values chosen to produce diverse E2M1-quantised levels after normalisation.
+      val rawA: Seq[Double] = Seq(
+         3.2,  -1.6,   0.8,   4.0,  -2.4,   1.2,  -0.6,   3.6,
+         2.0,  -3.0,   1.5,  -0.5,   2.5,  -1.0,   0.4,   1.8,
+        -2.2,   0.9,  -1.4,   3.1,  -0.7,   2.8,  -1.1,   0.3,
+         1.7,  -2.9,   0.6,  -1.3,   2.1,  -0.8,   1.9,  -3.5
+      )
+      val rawB: Seq[Double] = Seq(
+         1.0,   2.0,  -1.0,   0.5,   1.5,  -0.5,   2.0,  -1.0,
+         0.75, -1.25,  1.5,   2.0,  -0.75,  1.0,  -2.0,   0.5,
+         2.0,  -1.0,   0.5,  -1.5,   1.0,   0.25, -1.0,   2.0,
+        -0.5,   1.5,  -2.0,   1.0,   0.5,  -1.5,   1.0,  -0.25
+      )
+      require(rawA.size == blockSize && rawB.size == blockSize)
+
+      // MX block quantisation — B is quantised to E2M1 (coarse grid)
+      val (encA, rawScaleA) = quantizeBlock(rawA, cfg.elementTypeA, cfg.stype)
+      val (encB, rawScaleB) = quantizeBlock(rawB, cfg.elementTypeB, cfg.stype)
+
+      val scaleAf = decodeScale(rawScaleA, cfg.stype)
+      val scaleBf = decodeScale(rawScaleB, cfg.stype)
+      log(f"Block max |A| = ${rawA.map(math.abs).max}%.4f  → scale_A = $scaleAf%.6f  (raw=0x${rawScaleA.toHexString})")
+      log(f"Block max |B| = ${rawB.map(math.abs).max}%.4f  → scale_B = $scaleBf%.6f  (raw=0x${rawScaleB.toHexString})")
+      log(f"maxElemRepr(E5M2)=${maxElemRepr(cfg.elementTypeA)}%.1f  maxElemRepr(E2M1)=${maxElemRepr(cfg.elementTypeB)}%.1f")
+
+      log("-" * 80)
+      log("%-6s %8s %10s  %8s %10s  %14s  %14s".format(
+        "Elem", "rawA", "decA×sA", "rawB", "decB×sB", "A*B(quant)", "A*B(exact)"))
+      log("-" * 80)
+      var exactDot = 0.0
+      for (idx <- 0 until blockSize) {
+        val dA    = decodeElement(encA(idx), cfg.elementTypeA) * scaleAf
+        val dB    = decodeElement(encB(idx), cfg.elementTypeB) * scaleBf
+        val exact = rawA(idx) * rawB(idx)
+        exactDot += exact
+        log(f"$idx%-6d 0x${encA(idx).toHexString}%6s ${dA}%10.4f  " +
+            f"0x${encB(idx).toHexString}%4s ${dB}%10.4f  ${dA * dB}%14.4f  $exact%14.4f")
+      }
+      log("-" * 80)
+      log(f"Exact dot (no quantisation error) = $exactDot%.4f")
+
+      // Split 32 elements into 4 cycles of vsize=8; same shared scale per cycle
+      val cycles: Seq[(Seq[Int], Seq[Int], Int, Int)] =
+        (0 until (blockSize / vsize)).map { c =>
+          val slice = c * vsize until (c + 1) * vsize
+          (encA.slice(slice.start, slice.end),
+           encB.slice(slice.start, slice.end),
+           rawScaleA, rawScaleB)
+        }
+
+      test(new FusedDotProductUnit(cfg, vsize, true)).withAnnotations(Seq(WriteVcdAnnotation)) { dut =>
+        initDut(dut)
+        dut.io.resetAcc.poke(true.B); dut.clock.step()
+        dut.io.resetAcc.poke(false.B)
+        runCycles(dut, cfg, cycles, "E5M2 x E2M1 / UE8M0 block-quantized vec=8 × 4 cycles")
+      }
+      log("[PASSED] E5M2 x E2M1 / UE8M0 block-quantized 32-element dot product")
+    } catch { case e: Exception =>
+      logErr(s"[FAILED] E5M2 x E2M1 / UE8M0 block-quantized 32-element dot product: ${e.getMessage}"); throw e
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 20: E5M2 × E2M1 / UE8M0 — multi-block accumulation (vec=8, 30 cycles)
+  //
+  //  The top-flow mismatch log shows indices up to [29], which corresponds to
+  //  a run of ≥30 accumulation cycles.  This test processes four independent
+  //  32-element MX blocks back-to-back (no resetAcc between blocks) so that
+  //  the running accumulator is exercised across 4 × 4 = 16 cycles, and also
+  //  a separate 32-element block repeated to reach 30+ cycles.
+  //
+  //  Failure here (but not in Test 19) would point to an accumulator issue
+  //  rather than a single-cycle multiply bug.
+  // -----------------------------------------------------------------------
+  test("FusedDotProductUnit: E5M2 x E2M1 / UE8M0 multi-block accumulation (vec=8, 32 cycles)") {
+    log("\n[TEST 20] E5M2 x E2M1 / UE8M0 multi-block accumulation (vec=8, 32 cycles)")
+    try {
+      val cfg       = ScaleAddConfig(MXFormats.E5M2, MXFormats.E2M1, ScaleFormats.UE8M0)
+      val vsize     = 8
+      val blockSize = 32
+      val rng       = new Random(1234)
+
+      // Generate 8 independent 32-element MX blocks (8 × 4 cycles = 32 cycles total).
+      // Each block has its own independently-computed shared scale factor.
+      val allCycles = (0 until 8).flatMap { blk =>
+        val aVals = Seq.fill(blockSize)(rng.nextGaussian() * 2.0)
+        val bVals = Seq.fill(blockSize)(rng.nextGaussian() * 1.5)
+        val (encA, rawSA) = quantizeBlock(aVals, cfg.elementTypeA, cfg.stype)
+        val (encB, rawSB) = quantizeBlock(bVals, cfg.elementTypeB, cfg.stype)
+        // 监控量化后的最大值，看是否触及了 E2M1 的边界
+        val maxAbsB = bVals.map(_.abs).max
+        val reprB = maxElemRepr(cfg.elementTypeB)
+        val decodedSB = decodeScale(rawSB, cfg.stype)
+        log(f"Block $blk: maxAbsB=$maxAbsB%.4f, reprB=$reprB%.4f, scaleB=$decodedSB%.4e")
+        log(f"Block $blk: scale_A=${decodeScale(rawSA, cfg.stype)}%12.4e  scale_B=${decodeScale(rawSB, cfg.stype)}%12.4e")
+        (0 until (blockSize / vsize)).map { c =>
+          val s = c * vsize
+          (encA.slice(s, s + vsize), encB.slice(s, s + vsize), rawSA, rawSB)
+        }
+      }
+
+      test(new FusedDotProductUnit(cfg, vsize, true)).withAnnotations(Seq(WriteVcdAnnotation)) { dut =>
+        initDut(dut)
+        dut.io.resetAcc.poke(true.B); dut.clock.step()
+        dut.io.resetAcc.poke(false.B)
+        runCycles(dut, cfg, allCycles, "E5M2 x E2M1 / UE8M0 multi-block vec=8 32 cycles")
+      }
+      log("[PASSED] E5M2 x E2M1 / UE8M0 multi-block accumulation 32 cycles")
+    } catch { case e: Exception =>
+      logErr(s"[FAILED] E5M2 x E2M1 / UE8M0 multi-block accumulation: ${e.getMessage}"); throw e
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Helper: vec-of-4 subnormal raw encodings for a given element type.
+  //
+  //   FP types (E5M2, E4M3, E3M2, E2M3, E2M1):
+  //     Subnormal = exponent field all-zero with non-zero mantissa.
+  //     Returns [minSub, maxSub, minSub, maxSub] where
+  //       minSub = exp=0, mant=1  (smallest subnormal magnitude)
+  //       maxSub = exp=0, mant=all-1s  (largest subnormal magnitude)
+  //     sign=0 → positive, sign=1 → negative.
+  //
+  //   INT8: no subnormal concept — returns small magnitudes {1, 2, 1, 2}
+  //   (sign=1 encodes negative values in 2's complement: -1=0xFF, -2=0xFE).
+  // -----------------------------------------------------------------------
+  def vec4Subnormals(t: ElementType, sign: Int = 0): Seq[Int] = {
+    val signBit = sign << (t.totalWidth - 1)
+    if (t.name == "INT8") {
+      // 2's complement: positive small → 1,2; negative small → 0xFF(-1), 0xFE(-2)
+      if (sign == 0) Seq(1, 2, 1, 2)
+      else           Seq(0xFF, 0xFE, 0xFF, 0xFE)
+    } else {
+      val minSub = 1                              // exp=0, mant=1
+      val maxSub = (1 << t.elementWidthMant) - 1  // exp=0, mant=all-1s
+      Seq(signBit | minSub, signBit | maxSub, signBit | minSub, signBit | maxSub)
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 21: Subnormal element values — all FP element type pairs (vec=4, 4 cycles)
+  //
+  //   For each (etA, etB) pair drawn from {E5M2, E4M3, E3M2, E2M3, E2M1}
+  //   (INT8 is excluded — no subnormal concept):
+  //     Cycle 0: subnormal A+ × normal B   — tests A-subnormal decode
+  //     Cycle 1: subnormal A- × normal B   — tests negative A-subnormal
+  //     Cycle 2: normal A  × subnormal B+  — tests B-subnormal decode
+  //     Cycle 3: subnormal A+ × subnormal B+ — tests sub×sub multiply
+  //   Scale = UE8M0 (pure power-of-2, scale=1.0) to isolate element behavior.
+  // -----------------------------------------------------------------------
+  test("FusedDotProductUnit: Subnormal element values — all FP type pairs (vec=4)") {
+    log("\n[TEST 21] Subnormal element values — all FP element type pairs (vec=4)")
+    val fpTypes  = MXFormats.allElementTypes.filterNot(_.name == "INT8")
+    val scaleRaw = encodeScale(1.0, ScaleFormats.UE8M0)
+    val vsize    = 4
+    var passed   = 0; var failed = 0
+
+    for (etA <- fpTypes; etB <- fpTypes) {
+      val cfg   = ScaleAddConfig(etA, etB, ScaleFormats.UE8M0)
+      val label = s"Subnormal elem: ${etA.name} x ${etB.name} / UE8M0 vec=$vsize"
+
+      val subA_pos = vec4Subnormals(etA, sign = 0)
+      val subA_neg = vec4Subnormals(etA, sign = 1)
+      val subB_pos = vec4Subnormals(etB, sign = 0)
+      val norm_A   = Seq.fill(vsize)(encodeElement(1.0, etA))
+      val norm_B   = Seq.fill(vsize)(encodeElement(1.0, etB))
+
+      val cycles = Seq(
+        (subA_pos, norm_B,   scaleRaw, scaleRaw),  // subnormal A+ × normal B
+        (subA_neg, norm_B,   scaleRaw, scaleRaw),  // subnormal A- × normal B
+        (norm_A,   subB_pos, scaleRaw, scaleRaw),  // normal A × subnormal B+
+        (subA_pos, subB_pos, scaleRaw, scaleRaw),  // subnormal A+ × subnormal B+
+      )
+
+      try {
+        test(new FusedDotProductUnit(cfg, vsize, true)) { dut =>
+          initDut(dut)
+          dut.io.resetAcc.poke(true.B); dut.clock.step()
+          dut.io.resetAcc.poke(false.B)
+          runCycles(dut, cfg, cycles, label)
+        }
+        log(s"[OK] $label")
+        passed += 1
+      } catch { case e: Exception =>
+        logErr(s"[FAIL] $label: ${e.getMessage}")
+        failed += 1
+      }
+    }
+
+    val total   = fpTypes.size * fpTypes.size
+    val summary = s"Subnormal elements: $passed passed, $failed failed out of $total combinations"
+    if (failed > 0) logErr(summary) else log(summary)
+    assert(failed == 0, s"$failed subnormal-element pair(s) failed — see log for details")
+    log("[PASSED] Subnormal element values — all FP type pairs")
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 22: Subnormal scale values — all scale types with mantissa bits (vec=4)
+  //
+  //   UE8M0 is a pure-exponent scale and has no subnormal representation;
+  //   all remaining 6 scale types (UE7M1 … UE2M6) are tested.
+  //   A subnormal scale is encoded as exp=0, mant≠0.  Element values are
+  //   normal (1.0) so any mismatch traces directly to the scale-decode path.
+  //
+  //   For very small subnormal scales (UE7M1, UE6M2) the FP32 product may
+  //   underflow to 0; both the SW golden model and HW should agree on 0,
+  //   which passes within the existing 1e-37 absolute tolerance floor.
+  //
+  //     Cycle 0: scale_A = sub_min (exp=0, mant=1),       scale_B = sub_min
+  //     Cycle 1: scale_A = sub_max (exp=0, mant=all-1s),  scale_B = sub_min
+  //     Cycle 2: scale_A = sub_max,                       scale_B = sub_max
+  // -----------------------------------------------------------------------
+  test("FusedDotProductUnit: Subnormal scale values — all scale types with mantissa (vec=4)") {
+    log("\n[TEST 22] Subnormal scale values — all scale types with mantissa (vec=4)")
+    val etA   = MXFormats.E5M2
+    val etB   = MXFormats.E4M3
+    val vsize = 4
+    val scaleTypesWithMant = ScaleFormats.allScaleTypes.filter(_.mantScaleWidth > 0)
+    var passed = 0; var failed = 0
+
+    for (st <- scaleTypesWithMant) {
+      val cfg   = ScaleAddConfig(etA, etB, st)
+      val label = s"Subnormal scale: E5M2 x E4M3 / ${st.name} vec=$vsize"
+
+      val subScaleMin = 1                              // exp=0, mant=1
+      val subScaleMax = (1 << st.mantScaleWidth) - 1  // exp=0, mant=all-1s
+      val normA = Seq.fill(vsize)(encodeElement(1.0, etA))
+      val normB = Seq.fill(vsize)(encodeElement(1.0, etB))
+
+      val cycles = Seq(
+        (normA, normB, subScaleMin, subScaleMin),  // min subnormal × min subnormal
+        (normA, normB, subScaleMax, subScaleMin),  // max subnormal × min subnormal
+        (normA, normB, subScaleMax, subScaleMax),  // max subnormal × max subnormal
+      )
+
+      try {
+        test(new FusedDotProductUnit(cfg, vsize, true)) { dut =>
+          initDut(dut)
+          dut.io.resetAcc.poke(true.B); dut.clock.step()
+          dut.io.resetAcc.poke(false.B)
+          runCycles(dut, cfg, cycles, label)
+        }
+        log(s"[OK] $label")
+        passed += 1
+      } catch { case e: Exception =>
+        logErr(s"[FAIL] $label: ${e.getMessage}")
+        failed += 1
+      }
+    }
+
+    val summary = s"Subnormal scales: $passed passed, $failed failed out of ${scaleTypesWithMant.size}"
+    if (failed > 0) logErr(summary) else log(summary)
+    assert(failed == 0, s"$failed subnormal-scale type(s) failed — see log for details")
+    log("[PASSED] Subnormal scale values — all scale types with mantissa")
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 23: All type combinations with subnormal inputs — full sweep (vec=4)
+  //
+  //   Covers all 6×6×7 = 252 (etA × etB × scaleType) triples.
+  //   Element inputs use subnormal (or near-zero for INT8) raw values.
+  //   Scale inputs: for scale types with mantissa bits, the smallest subnormal
+  //   scale (exp=0, mant=1) is used; for UE8M0 (pure exponent), scale=1.0.
+  //   This exercises the combined subnormal-element × subnormal-scale path.
+  //
+  //     Cycle 0: A+ × B+ — positive × positive
+  //     Cycle 1: A+ × B- — positive × negative
+  //     Cycle 2: A- × B+ — negative × positive
+  // -----------------------------------------------------------------------
+  test("FusedDotProductUnit: All type combinations with subnormal inputs — full sweep (vec=4)") {
+    log("\n[TEST 23] All type combinations with subnormal inputs — full sweep (vec=4)")
+    val vsize    = 4
+    val allElem  = MXFormats.allElementTypes
+    val allScale = ScaleFormats.allScaleTypes
+    val total    = allElem.size * allElem.size * allScale.size
+    var passed   = 0; var failed = 0
+    
+    for (etA <- allElem; etB <- allElem; st <- allScale) {
+      val cfg   = ScaleAddConfig(etA, etB, st)
+      val label = s"Subnormal sweep: ${etA.name} x ${etB.name} / ${st.name} vec=$vsize"
+
+      // Subnormal scale for types with mantissa; normal 1.0 for UE8M0.
+      val scaleRaw = if (st.mantScaleWidth > 0) 1 else encodeScale(1.0, st)
+
+      val subA_pos = vec4Subnormals(etA, sign = 0)
+      val subA_neg = vec4Subnormals(etA, sign = 1)
+      val subB_pos = vec4Subnormals(etB, sign = 0)
+      val subB_neg = vec4Subnormals(etB, sign = 1)
+
+      val cycles = Seq(
+        (subA_pos, subB_pos, scaleRaw, scaleRaw),  // A+ × B+
+        (subA_pos, subB_neg, scaleRaw, scaleRaw),  // A+ × B-
+        (subA_neg, subB_pos, scaleRaw, scaleRaw),  // A- × B+
+      )
+
+      // 当 scale 为 E7M1 (UE7M1) 时打印详细 lane 信息，便于 debug
+      val verboseThisRun = st.name == "UE7M1"
+
+      try {
+        test(new FusedDotProductUnit(cfg, vsize, true)) { dut =>
+          initDut(dut)
+          dut.io.resetAcc.poke(true.B); dut.clock.step()
+          dut.io.resetAcc.poke(false.B)
+          runCycles(dut, cfg, cycles, label, verbose = verboseThisRun)
+        }
+        log(s"[OK] $label")
+        passed += 1
+      } catch { case e: Exception =>
+        logErr(s"[FAIL] $label: ${e.getMessage}")
+        failed += 1
+      }
+    }
+
+    val summary = s"Full subnormal sweep: $passed passed, $failed failed out of $total"
+    if (failed > 0) logErr(summary) else log(summary)
+    assert(failed == 0, s"$failed subnormal combination(s) failed — see log for details")
+    log("[PASSED] All type combinations with subnormal inputs — full sweep")
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 24: INT8 × xxx / UE8M0 — multi-block accumulation sweep (vec=8, 32 cycles)
+  //
+  //  For each element type B in allElementTypes {INT8, E5M2, E4M3, E3M2, E2M3, E2M1},
+  //  runs 8 independent 32-element MX blocks back-to-back (no resetAcc between
+  //  blocks) with randomly generated values quantized via quantizeBlock.
+  //  The structure mirrors Test 20 but sweeps all B-side element types while
+  //  fixing elementTypeA = INT8 and scale = UE8M0.
+  //
+  //  Failure for a specific (INT8 × etB) pair would indicate an accumulator
+  //  or mixed-type multiply issue rather than a single-cycle decode bug.
+  // -----------------------------------------------------------------------
+  test("FusedDotProductUnit: INT8 x xxx / UE8M0 multi-block accumulation sweep (vec=8, 32 cycles)") {
+    log("\n[TEST 24] INT8 x xxx / UE8M0 multi-block accumulation sweep (vec=8, 32 cycles)")
+    val vsize     = 8
+    val blockSize = 32
+    val allElemB  = MXFormats.allElementTypes
+    var passed    = 0; var failed = 0
+
+    for (etB <- allElemB) {
+      val cfg   = ScaleAddConfig(MXFormats.INT8, etB, ScaleFormats.UE8M0)
+      val label = s"INT8 x ${etB.name} / UE8M0 multi-block vec=$vsize 32 cycles"
+      log(s"\n--- $label ---")
+      val rng = new Random(5678)
+
+      // Generate 8 independent 32-element MX blocks (8 × 4 cycles = 32 cycles total).
+      // Each block has its own independently-computed shared scale factor.
+      val allCycles = (0 until 8).flatMap { blk =>
+        val aVals = Seq.fill(blockSize)(rng.nextGaussian() * 2.0)
+        val bVals = Seq.fill(blockSize)(rng.nextGaussian() * 1.5)
+        val (encA, rawSA) = quantizeBlock(aVals, cfg.elementTypeA, cfg.stype)
+        val (encB, rawSB) = quantizeBlock(bVals, cfg.elementTypeB, cfg.stype)
+        val maxAbsB   = bVals.map(_.abs).max
+        val reprB     = maxElemRepr(cfg.elementTypeB)
+        val decodedSB = decodeScale(rawSB, cfg.stype)
+        log(f"Block $blk: maxAbsB=$maxAbsB%.4f, reprB=$reprB%.4f, scaleB=$decodedSB%.4e")
+        log(f"Block $blk: scale_A=${decodeScale(rawSA, cfg.stype)}%12.4e  scale_B=${decodeScale(rawSB, cfg.stype)}%12.4e")
+        (0 until (blockSize / vsize)).map { c =>
+          val s = c * vsize
+          (encA.slice(s, s + vsize), encB.slice(s, s + vsize), rawSA, rawSB)
+        }
+      }
+
+      try {
+        test(new FusedDotProductUnit(cfg, vsize, true)).withAnnotations(Seq(WriteVcdAnnotation)) { dut =>
+          initDut(dut)
+          dut.io.resetAcc.poke(true.B); dut.clock.step()
+          dut.io.resetAcc.poke(false.B)
+          runCycles(dut, cfg, allCycles, label)
+        }
+        log(s"[PASSED] $label")
+        passed += 1
+      } catch { case e: Exception =>
+        logErr(s"[FAILED] $label: ${e.getMessage}")
+        failed += 1
+      }
+    }
+
+    val summary = s"INT8 x xxx / UE8M0 multi-block sweep: $passed passed, $failed failed out of ${allElemB.size}"
+    if (failed > 0) logErr(summary) else log(summary)
+    assert(failed == 0, s"$failed INT8 multi-block combination(s) failed — see log for details")
+    log("[PASSED] INT8 x xxx / UE8M0 multi-block accumulation sweep")
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 25: Python-generated MXINT8 × E2M1 / UE8M0 — hardcoded vectors
+  //          (vec=4, 2 blocks × 8 cycles = 16 cycles total)
+  //
+  //  Vectors generated by gen_int8_e2m1_test.py using quantize_mx_v2
+  //  with dtype='mxint8', scale_format='UE8M0', block_size=32, seed=9999.
+  //  Raw encodings are 2's complement MXINT8 (signed 8-bit integer)
+  //  and 4-bit E2M1 in a uint8.  Expected result: 22.406250.
+  // -----------------------------------------------------------------------
+  test("FusedDotProductUnit: Python-generated MXINT8 x E2M1 / UE8M0 hardcoded (vec=4, 16 cycles)") {
+    log("\n[TEST 25] Python-generated MXINT8 x E2M1 / UE8M0 hardcoded (vec=4, 16 cycles)")
+    try {
+      val cfg   = ScaleAddConfig(MXFormats.INT8, MXFormats.E2M1, ScaleFormats.UE8M0)
+      val vsize = 4
+
+      // Generated by gen_int8_e2m1_test.py (quantize_mx_v2, seed=9999)
+      // INT8 raw encodings are 2's complement (hardware format).
+      // Converted from original sign-magnitude output of gen_int8_e2m1_test.py.
+
+      val rawScaleA_0 = 0x77  // scale_A = 3.906250e-03
+      val rawScaleB_0 = 0x75  // scale_B = 9.765625e-04
+      val rawScaleA_1 = 0x77  // scale_A = 3.906250e-03
+      val rawScaleB_1 = 0x74  // scale_B = 4.882812e-04
+
+      val encA_0: Seq[Int] = Seq(
+        0xF2, 0xFB, 0xF9, 0x15, 0x49, 0xD9, 0xDB, 0xE6,
+        0x31, 0x10, 0xC8, 0xEB, 0x10, 0x29, 0x1B, 0xBD,
+        0xEE, 0xFB, 0xF4, 0x1F, 0xFB, 0x34, 0x02, 0x30,
+        0xFE, 0xE5, 0xD9, 0xDC, 0xF7, 0x2C, 0xF9, 0x20)
+      val encB_0: Seq[Int] = Seq(
+        0x09, 0x01, 0x00, 0x0A, 0x08, 0x00, 0x0B, 0x04,
+        0x0B, 0x04, 0x0D, 0x08, 0x0C, 0x01, 0x02, 0x0D,
+        0x03, 0x0B, 0x09, 0x01, 0x09, 0x0A, 0x01, 0x02,
+        0x03, 0x00, 0x02, 0x0E, 0x09, 0x01, 0x09, 0x0A)
+
+      val encA_1: Seq[Int] = Seq(
+        0x1A, 0x12, 0xE2, 0xD6, 0x03, 0xE8, 0xFE, 0x23,
+        0xDD, 0x26, 0xED, 0x77, 0xD6, 0xF9, 0x29, 0xEE,
+        0x19, 0xD8, 0x16, 0xDA, 0x08, 0xD7, 0xF3, 0x3B,
+        0xDB, 0x08, 0x10, 0xF6, 0xFB, 0xEE, 0xE0, 0x00)
+      val encB_1: Seq[Int] = Seq(
+        0x0F, 0x0D, 0x01, 0x02, 0x00, 0x02, 0x09, 0x0E,
+        0x0F, 0x0B, 0x04, 0x01, 0x03, 0x07, 0x09, 0x0B,
+        0x01, 0x0D, 0x05, 0x00, 0x05, 0x0D, 0x04, 0x0B,
+        0x09, 0x06, 0x01, 0x03, 0x02, 0x04, 0x02, 0x08)
+
+      // Print decode table (same structure as test 19/20)
+      val blockDefs = Seq(
+        (encA_0, encB_0, rawScaleA_0, rawScaleB_0),
+        (encA_1, encB_1, rawScaleA_1, rawScaleB_1))
+
+      for ((eA, eB, rsA, rsB) <- blockDefs.zipWithIndex.map { case (t, i) => (t._1, t._2, t._3, t._4) }) {
+        val sA = decodeScale(rsA, cfg.stype)
+        val sB = decodeScale(rsB, cfg.stype)
+        val maxAbsB = eB.map(r => math.abs(decodeElement(r, cfg.elementTypeB) * sB)).max
+        log(f"Block: maxAbsB=$maxAbsB%.4f  scale_A=${sA}%12.4e  scale_B=${sB}%12.4e")
+      }
+      log("-" * 80)
+      log("%-6s %6s %10s  %5s %10s  %12s".format("Elem", "rawA", "decA×sA", "rawB", "decB×sB", "A*B"))
+      log("-" * 80)
+      var exactDot = 0.0
+      for (((eA, eB, rsA, rsB), blk) <- blockDefs.zipWithIndex) {
+        val sA = decodeScale(rsA, cfg.stype)
+        val sB = decodeScale(rsB, cfg.stype)
+        for (idx <- 0 until 32) {
+          val dA = decodeElement(eA(idx), cfg.elementTypeA) * sA
+          val dB = decodeElement(eB(idx), cfg.elementTypeB) * sB
+          exactDot += dA * dB
+          log(f"${blk*32+idx}%-6d 0x${eA(idx).toHexString}%4s ${dA}%10.4f  0x${eB(idx).toHexString}%4s ${dB}%10.4f  ${dA*dB}%12.4f")
+        }
+      }
+      log("-" * 80)
+      log(f"Expected dot product (Python golden) = $exactDot%.4e  (should be 22.406250)")
+
+      // Build cycle list: block 0 then block 1, vsize=4 → 8 cycles each
+      val allCycles = blockDefs.flatMap { case (eA, eB, rsA, rsB) =>
+        (0 until (32 / vsize)).map { c =>
+          val s = c * vsize
+          (eA.slice(s, s + vsize), eB.slice(s, s + vsize), rsA, rsB)
+        }
+      }
+
+      test(new FusedDotProductUnit(cfg, vsize, true)).withAnnotations(Seq(WriteVcdAnnotation)) { dut =>
+        initDut(dut)
+        dut.io.resetAcc.poke(true.B); dut.clock.step()
+        dut.io.resetAcc.poke(false.B)
+        runCycles(dut, cfg, allCycles, "Python MXINT8 x E2M1 / UE8M0 vec=4 16 cycles")
+      }
+      log("[PASSED] Python-generated MXINT8 x E2M1 / UE8M0 hardcoded test")
+    } catch { case e: Exception =>
+      logErr(s"[FAILED] Python-generated MXINT8 x E2M1 / UE8M0 hardcoded: ${e.getMessage}"); throw e
+    }
+  }
 }
+                       

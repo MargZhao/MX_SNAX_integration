@@ -27,6 +27,19 @@ from data_utils import format_scalar_definition, \
 
 _SCALE_FORMAT_MAP = {0: "UE8M0", 1: "UE7M1", 2: "UE6M2", 3: "UE5M3", 4: "UE4M4", 5: "UE3M5", 6: "UE2M6"}
 
+# Maps quantize dtype strings → hw_snax_gemm etype strings (keys of quantize._HW_ELEM)
+_DTYPE_TO_HW_ETYPE = {
+    'fp8_e5m2': 'E5M2',
+    'fp8_e4m3': 'E4M3',
+    'fp6_e3m2': 'E3M2',
+    'fp6_e2m3': 'E2M3',
+    'fp4_e2m1': 'E2M1',
+    'mxint8':   'INT8',
+}
+
+# Maps quantize_mode → output element dtype for BFP requantization (modes 2-5)
+_O_DTYPE_MAP = {2: 'fp8_e5m2', 3: 'fp8_e4m3', 4: 'mxint8', 5: 'fp6_e2m3', 6: 'fp6_e3m2'}
+
 ###################################################################
 ###############    auxiliray functions   ##########################
 ###################################################################
@@ -77,7 +90,7 @@ def data_file_emit(**kwargs):
     # A_fp32 = np.eye(K, N, dtype=np.float32)
     #B_fp32 = np.random.uniform(low=-1.0, high=0.0, size=(M, K)).astype(np.float32)
     # A_fp32 = np.tile(np.arange(1, K+1), (M, 1)).astype(np.float32)
-    # B_fp32 = np.tile(np.arange(1, N+1), (K, 1)).astype(np.float32)
+    # # B_fp32 = np.tile(np.arange(1, N+1), (K, 1)).astype(np.float32)
     # A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
     # B_fp32 = np.eye(K, N, dtype=np.float32)
     
@@ -99,9 +112,7 @@ def data_file_emit(**kwargs):
     data_str += [format_scalar_definition("uint32_t", "share_format", share_format)]
     A_quantized, exp_A_readable, exp_A, A_input = quantize.quantize_mx_v2(A_fp32_padded, A_dtype, block_size=block_size, axis=1, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
     B_quantized, exp_B_readable, exp_B, B_input = quantize.quantize_mx_v2(B_fp32_padded, B_dtype, block_size=block_size, axis=0, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
-    # A_quantized, exp_A, A_input = quantize.quantize_mx(A_fp32_padded, A_dtype, block_size=block_size, axis=1)
-    # B_quantized, exp_B, B_input = quantize.quantize_mx(B_fp32_padded, B_dtype, block_size=block_size, axis=0)
-
+   
     #######################################################
     ################### CSR  settings #####################
     #######################################################
@@ -112,6 +123,7 @@ def data_file_emit(**kwargs):
     data_str += [format_scalar_definition("uint32_t", "OUT_CNT", int(out_cnt))]
     #TODO: add real config for mode
     data_str += [format_scalar_definition("uint32_t", "MODE", int(0))]
+    data_str += [format_scalar_definition("uint32_t", "QUANTIZE_MODE", int(quantize_mode))]
 
     #######################################################
     #####################streamer params###################
@@ -127,8 +139,10 @@ def data_file_emit(**kwargs):
         o_bitwidth = 32
     elif quantize_mode == 1:
         o_bitwidth = 16
-    else:
+    elif quantize_mode in (2, 3, 4):   # fp8_e5m2, fp8_e4m3, mxint8: all 8-bit
         o_bitwidth = 8
+    else:                               # modes 5, 6: fp6
+        o_bitwidth = 6
     
     stationary = kwargs["stationary"]
     data_str += [format_scalar_definition("uint32_t", "stationary", stationary)]
@@ -263,31 +277,41 @@ def data_file_emit(**kwargs):
     # TODO: add an extra streamer for partial sum to support other type of stationarity
     data_str += [format_scalar_definition("int32_t", "Oslstride0", bankwidth / bits_per_byte)]
 
-    O_tile_bytes = parfor_M * parfor_N * o_bitwidth / bits_per_byte
+    
 
-    if stationary == output_stationary:
-        # Otlbound0  = k_tiles;   
-        # Otlstride0 = 0
-        # Otlbound1  = n_tiles;   
-        # Otlstride1 = O_tile_bytes
-        # Otlbound2  = m_tiles;   
-        # Otlstride2 = n_tiles * O_tile_bytes
-        Otlbound0  = n_tiles;   Otlstride0 = O_tile_bytes
-        Otlbound1  = m_tiles;   Otlstride1 = n_tiles * O_tile_bytes
-    elif stationary == weight_stationary:
-        Otlbound0  = m_tiles;   
-        Otlstride0 = 0
-        Otlbound1  = n_tiles;   
-        Otlstride1 = k_tiles * O_tile_bytes
-        Otlbound2  = k_tiles;   
-        Otlstride2 = O_tile_bytes
-    elif stationary == input_stationary:
-        Otlbound0  = n_tiles;   
-        Otlstride0 = k_tiles * O_tile_bytes
-        Otlbound1  = m_tiles;   
-        Otlstride1 = 0
-        Otlbound2  = k_tiles;   
-        Otlstride2 = O_tile_bytes
+    if quantize_mode == 0 or quantize_mode == 1:
+        #with FP32/BF16 requan, TODO: see how to put fp6
+        O_tile_bytes = parfor_M * parfor_N * o_bitwidth / bits_per_byte
+        if stationary == output_stationary:
+            # Otlbound0  = k_tiles;   
+            # Otlstride0 = 0
+            # Otlbound1  = n_tiles;   
+            # Otlstride1 = O_tile_bytes
+            # Otlbound2  = m_tiles;   
+            # Otlstride2 = n_tiles * O_tile_bytes
+            Otlbound0  = n_tiles;   Otlstride0 = O_tile_bytes
+            Otlbound1  = m_tiles;   Otlstride1 = n_tiles * O_tile_bytes
+        elif stationary == weight_stationary:
+            Otlbound0  = m_tiles;   
+            Otlstride0 = 0
+            Otlbound1  = n_tiles;   
+            Otlstride1 = k_tiles * O_tile_bytes
+            Otlbound2  = k_tiles;   
+            Otlstride2 = O_tile_bytes
+        elif stationary == input_stationary:
+            Otlbound0  = n_tiles;   
+            Otlstride0 = k_tiles * O_tile_bytes
+            Otlbound1  = m_tiles;   
+            Otlstride1 = 0
+            Otlbound2  = k_tiles;   
+            Otlstride2 = O_tile_bytes
+    else:
+        #with BFP requan, TODO: see how to put fp6
+        if stationary == output_stationary:
+            O_tile_bytes = parfor_M * block_size * o_bitwidth / bits_per_byte
+            block_tiles = n_padded // block_size
+            Otlbound0  = block_tiles;   Otlstride0 = O_tile_bytes
+            Otlbound1  = m_tiles;   Otlstride1 = block_tiles * O_tile_bytes
 
     data_str += [format_scalar_definition("int32_t", "Otlbound0",  Otlbound0)]
     data_str += [format_scalar_definition("int32_t", "Otlstride0", Otlstride0)]
@@ -299,6 +323,19 @@ def data_file_emit(**kwargs):
 
     #-------------Share scale Out ( bank-aligned)----------------
     #TODO
+    if not (quantize_mode == 0 or quantize_mode == 1):
+        SHOut_tile_bytes = parfor_M * shared_bitwidth / bits_per_byte
+        SHOut_tile_bytes_aligned = int(ceil(SHOut_tile_bytes / bank_bytes) * bank_bytes)
+        if stationary == output_stationary:
+            block_tiles = n_padded // block_size
+            SHOuttlbound0  = block_tiles;   SHOuttlstride0 = SHOut_tile_bytes_aligned
+            SHOuttlbound1  = m_tiles;   SHOuttlstride1 = block_tiles * SHOut_tile_bytes_aligned
+
+        data_str += [format_scalar_definition("int32_t", "SHOutslstride0", bankwidth / bits_per_byte)]
+        data_str += [format_scalar_definition("int32_t", "SHOuttlbound0",  SHOuttlbound0)]
+        data_str += [format_scalar_definition("int32_t", "SHOuttlstride0", SHOuttlstride0)]
+        data_str += [format_scalar_definition("int32_t", "SHOuttlbound1",  SHOuttlbound1)]
+        data_str += [format_scalar_definition("int32_t", "SHOuttlstride1", SHOuttlstride1)]
 
 
     #######################################################
@@ -311,11 +348,13 @@ def data_file_emit(**kwargs):
     B_data_size     = k_tiles * n_tiles * B_tile_bytes_aligned
     scale_data_size = m_tiles * n_tiles * k_blocks * combined_tile
     O_data_size     = m_padded * n_padded * o_bitwidth // bits_per_byte
+    O_scale_data_size = m_padded * (n_padded // block_size) * shared_bitwidth // bits_per_byte
 
     data_str += [format_scalar_definition("int32_t", "A_data_size",     A_data_size)]
     data_str += [format_scalar_definition("int32_t", "B_data_size",     B_data_size)]
     data_str += [format_scalar_definition("int32_t", "scale_data_size", scale_data_size)]
     data_str += [format_scalar_definition("int32_t", "O_data_size",     O_data_size)]
+    data_str += [format_scalar_definition("int32_t", "O_scale_data_size", O_scale_data_size)]
 
     delta_local_a     = 0
     delta_local_b     = align_addr(delta_local_a + A_data_size, bank_bytes)
@@ -326,6 +365,9 @@ def data_file_emit(**kwargs):
     data_str += [format_scalar_definition("int32_t", "delta_local_b",     delta_local_b)]
     data_str += [format_scalar_definition("int32_t", "delta_local_scale", delta_local_scale)]
     data_str += [format_scalar_definition("int32_t", "delta_local_o",     delta_local_o)]
+    if not (quantize_mode == 0 or quantize_mode == 1):
+        delta_local_o_scale = align_addr(delta_local_o + O_data_size, bank_bytes)
+        data_str += [format_scalar_definition("int32_t", "delta_local_o_scale", delta_local_o_scale)]
 
     #######################################################
     ##################### data arrays #####################
@@ -386,46 +428,28 @@ def data_file_emit(**kwargs):
         chunks.append(np.concatenate([a_sc, b_sc, np.zeros(pad, dtype=np.uint8)]))
     combined_scale = np.concatenate(chunks).view(np.int8)
     data_str += [format_vector_definition("int8_t", "scale", combined_scale)]
-    # data_str +=  [format_vector_definition("float", "scale_A_Readable", exp_A_readable.flatten())]
-    # data_str +=  [format_vector_definition("float", "scale_B_Readable", exp_B_readable.flatten())]
-
-    # ---- D golden: A_quantized @ B_quantized, tile reorder (m_tiles, n_tiles, parfor_M, parfor_N) ----
-    # D_golden = (A_quantized @ B_quantized).astype(np.float32)
-
-    # ---- D golden: simulate hardware truncating FP32 adder and tree reduction ----
-    # Hardware FP32Adder truncates (discards guard bits) instead of rounding to nearest.
-    # VectorSize products are reduced via a balanced binary tree, then added to the accumulator.
-    # def fp32_add_truncate(a, b):
-    #     """FP32 add matching hardware FP32Adder: truncates guard bits (round-toward-zero)."""
-    #     result_f64 = np.float64(a) + np.float64(b)
-    #     if result_f64 == 0.0:
-    #         return np.float32(0.0)
-    #     r_f32 = np.float32(result_f64)
-    #     # If numpy rounded magnitude upward, subtract 1 ULP to simulate truncation
-    #     if abs(float(r_f32)) > abs(float(result_f64)):
-    #         bits = struct.unpack('I', struct.pack('f', float(r_f32)))[0]
-    #         mag = (bits & 0x7FFFFFFF) - 1
-    #         bits = (bits & 0x80000000) | (mag & 0x7FFFFFFF)
-    #         r_f32 = np.float32(struct.unpack('f', struct.pack('I', bits))[0])
-    #     return r_f32
-
-    # def tree_reduce_truncate(vals):
-    #     """Balanced binary tree reduction using truncating FP32 adder."""
-    #     while len(vals) > 1:
-    #         vals = [fp32_add_truncate(vals[i], vals[i+1]) if i+1 < len(vals) else vals[i]
-    #                 for i in range(0, len(vals), 2)]
-    #     return vals[0]
-
-    # D_golden = np.zeros((m_padded, n_padded), dtype=np.float32)
-    # for m in range(m_padded):
-    #     for n in range(n_padded):
-    #         acc = np.float32(0.0)
-    #         for k in range(0, k_aligned_blocksize, parfor_K):
-    #             products = [np.float32(A_quantized[m, k+v]) * np.float32(B_quantized[k+v, n])
-    #                         for v in range(parfor_K)]
-    #             acc = fp32_add_truncate(acc, tree_reduce_truncate(products))
-    #         D_golden[m, n] = acc
-    D_golden = (A_quantized @ B_quantized).astype(np.float32)
+    
+  
+    use_hw_gemm = bool(kwargs.get("use_hw_gemm", 0))
+    if use_hw_gemm:
+        # Hardware-accurate GEMM: simulate BFP_PE pipeline (CustomOperator →
+        # ScaleAddition → ScaleToFP32 → FP32 tree-reduce → FP32 accumulator).
+        etype_a  = _DTYPE_TO_HW_ETYPE[A_dtype]
+        etype_b  = _DTYPE_TO_HW_ETYPE[B_dtype]
+        stype    = _SCALE_FORMAT_MAP.get(share_format, 'UE8M0')
+        # A_input: (m_padded, k_aligned_blocksize) → (m_padded, k_blocks, block_size)
+        A_raw_3d   = A_input.reshape(m_padded, k_blocks, block_size)
+        # B_input: (k_aligned_blocksize, n_padded) → (n_padded, k_blocks, block_size)
+        B_raw_3d   = B_input.reshape(k_blocks, block_size, n_padded).transpose(2, 0, 1)
+        # exp_A: (m_padded, k_blocks), exp_B: (k_blocks, n_padded) → .T = (n_padded, k_blocks)
+        D_golden = quantize.hw_snax_gemm(
+            A_raw_3d, B_raw_3d,
+            exp_A,    exp_B.T,
+            etype_a=etype_a, etype_b=etype_b, stype=stype,
+        ).astype(np.float32)
+    else:
+        # Software reference GEMM: standard floating-point matmul on dequantized values.
+        D_golden = (A_quantized @ B_quantized).astype(np.float32)
     D_tiled = (D_golden
                .reshape(m_tiles, parfor_M, n_tiles, parfor_N)
                .transpose(0, 2, 1, 3)
@@ -468,6 +492,42 @@ def data_file_emit(**kwargs):
     # print(f"[verify] D tiling roundtrip:   {'OK' if d_ok else 'FAIL'}", file=sys.stderr)
     # if not (a_ok and b_ok and d_ok):
     #     raise SystemExit("[datagen] Tiling verification FAILED – fix before generating data")
+
+    if not (quantize_mode == 0 or quantize_mode == 1):
+        o_dtype     = _O_DTYPE_MAP[quantize_mode]
+        scale_fmt_s = _SCALE_FORMAT_MAP.get(share_format, 'UE8M0')
+        block_tiles = n_padded // block_size
+
+        _, _, exp_O, D_req_raw = quantize.quantize_mx_v2(
+            D_golden, o_dtype, block_size=block_size, axis=1, scale_format=scale_fmt_s
+        )
+        # exp_O: (m_padded, n_blocks) uint8 biased exponents
+        # D_req_raw: (m_padded, n_padded) uint8 raw element codes
+
+        # Tile quantized elements: m_tiles outer, block_tiles inner (matches O streamer)
+        O_quant_tiles = []
+        for m in range(m_tiles):
+            for kb in range(block_tiles):
+                elems  = D_req_raw[m*parfor_M:(m+1)*parfor_M, kb*block_size:(kb+1)*block_size]
+                packed = quantize._pack_raw_1d(elems.flatten(), o_dtype)
+                O_quant_tiles.append(packed)
+        O_quant_golden = np.concatenate(O_quant_tiles).view(np.int8)
+        data_str += [format_vector_definition("int8_t", "O_quant_golden", O_quant_golden)]
+
+        # Tile output scales: parfor_M bytes/tile, padded to SHOut_tile_bytes_aligned
+        exp_O_u8                 = exp_O.astype(np.uint8)
+        SHOut_tile_bytes         = parfor_M * shared_bitwidth // bits_per_byte
+        SHOut_tile_bytes_aligned = int(ceil(SHOut_tile_bytes / bank_bytes) * bank_bytes)
+        SHOut_pad                = SHOut_tile_bytes_aligned - SHOut_tile_bytes
+        O_scale_chunks = []
+        for m in range(m_tiles):
+            for kb in range(block_tiles):
+                sc = exp_O_u8[m*parfor_M:(m+1)*parfor_M, kb]
+                if SHOut_pad > 0:
+                    sc = np.concatenate([sc, np.zeros(SHOut_pad, dtype=np.uint8)])
+                O_scale_chunks.append(sc)
+        O_scale_golden = np.concatenate(O_scale_chunks).view(np.int8)
+        data_str += [format_vector_definition("int8_t", "O_scale_golden", O_scale_golden)]
 
     data_str += [format_vector_definition("uint32_t", "O_golden", D_tiled.view(np.uint32))]#need to store as uint32 to align with C library
     # data_str += [format_vector_definition("float", "A_human_readable", A_quantized)]

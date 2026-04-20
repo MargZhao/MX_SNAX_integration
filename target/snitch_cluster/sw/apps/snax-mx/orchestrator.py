@@ -49,6 +49,8 @@ _DTYPE_BITS = {
 # Mappings from params.hjson integer codes to Chisel type names
 _ELEMENT_TYPE_MAP = {0: "INT8", 1: "E5M2", 2: "E4M3", 3: "E3M2", 4: "E2M3", 5: "E2M1"}
 _SCALE_FORMAT_MAP = {0: "UE8M0", 1: "UE7M1", 2: "UE6M2", 3: "UE5M3", 4: "UE4M4", 5: "UE3M5", 6: "UE2M6"}
+# quantize_mode → requant output type string (used for Chisel gen directory naming)
+_FP8_OUT_TYPE_MAP = {2: "fp8_e5m2", 3: "fp8_e4m3", 4: "mxint8", 5: "fp6_e2m3", 6: "fp6_e3m2"}
 
 # Mapping from params.hjson dtype strings to _ELEMENT_TYPE_MAP integer codes
 _DTYPE_TO_ELEMENT_TYPE = {
@@ -62,7 +64,7 @@ _DTYPE_TO_ELEMENT_TYPE = {
 
 
 def _o_bitwidth(quantize_mode: int) -> int:
-    return {0: 32, 1: 16, 2: 8}.get(quantize_mode, 32)
+    return {0: 32, 1: 16, 2: 8, 3: 8, 4: 8, 5: 6, 6: 6}.get(quantize_mode, 32)
 
 
 def compute_hw_cfg(p: dict) -> dict:
@@ -90,14 +92,16 @@ def compute_hw_cfg(p: dict) -> dict:
     B_dtype    = p["B_dtype"]
     A_bits     = _DTYPE_BITS[A_dtype]
     B_bits     = _DTYPE_BITS[B_dtype]
-    o_bits     = _o_bitwidth(p.get("quantize_mode", 0))
+    quantize_mode = p.get("quantize_mode", 0)
+    o_bits     = _o_bitwidth(quantize_mode)
     stationary = p.get("stationary", 0)
+    
 
     # Tile sizes in bytes, aligned to 8
     A_tile = math.ceil(parfor_M * parfor_K * A_bits / 8 / 8) * 8
     B_tile = math.ceil(parfor_K * parfor_N * B_bits / 8 / 8) * 8
     S_tile = math.ceil((parfor_M + parfor_N) / 8) * 8
-    O_tile = parfor_M * parfor_N * o_bits // 8
+    O_tile = math.ceil(parfor_M * parfor_N * o_bits / 8 / 8) * 8
 
     ch_A   = A_tile // 8
     ch_B   = B_tile // 8
@@ -105,18 +109,30 @@ def compute_hw_cfg(p: dict) -> dict:
     ch_out = O_tile // 8
     total_channels = ch_A + ch_B + ch_S + ch_out
 
-
+    writer_spatial_bounds = [[ch_out]]
+    writer_num_channel = [ch_out]
     # Scale reader: 4 loops (within-block stride=0 / k_block / n_tile / m_tile)
     # output_stationary writer: 2 temporal loops; other modes: 3
     writer_tdim = 2 if stationary == 0 else 3
+    writer_temporal_dim = [writer_tdim]
+
+    #for requantizaiton 
+    if quantize_mode in [2, 3, 4, 5, 6]:
+        O_shared_tile = math.ceil((parfor_M) / 8) * 8
+        ch_share_out = O_shared_tile // 8
+        total_channels += ch_share_out
+        writer_spatial_bounds.append([ch_share_out])
+        writer_num_channel.append(ch_share_out)
+        writer_temporal_dim.append(writer_tdim)
+
 
     return {
         "reader_spatial_bounds": [[ch_A], [ch_B], [ch_S]],
         "reader_num_channel":    [ch_A, ch_B, ch_S],
         "reader_temporal_dim":   [3, 3, 4],
-        "writer_spatial_bounds": [[ch_out]],
-        "writer_num_channel":    [ch_out],
-        "writer_temporal_dim":   [writer_tdim],
+        "writer_spatial_bounds": writer_spatial_bounds,
+        "writer_num_channel":    writer_num_channel,
+        "writer_temporal_dim":   writer_temporal_dim,
         "snax_tcdm_ports":       total_channels,
         "sparse_interconnect_config": [[total_channels, 1]],
         "TileRows":       parfor_M,
@@ -175,7 +191,57 @@ def patch_hwcfg(src: Path, dst: Path, hw: dict) -> None:
 # Chisel RTL generation
 # ---------------------------------------------------------------------------
 
-def run_chisel_gen(p: dict) -> Path:
+# def run_chisel_gen(p: dict) -> Path:
+#     """
+#     Derive FusedDotProductUnit parameters from params and invoke sbt to
+#     generate SystemVerilog.
+
+#     Mapping from params.hjson:
+#       data_type     (int, default 0) → type_a and type_b element format
+#       shared_format (int, default 0) → scale format
+#       parfor_K                       → vectorSize (parallel MACs per cycle)
+#     """
+#     A_dtype       = p.get("A_dtype",       "mxint8")
+#     B_dtype       = p.get("B_dtype",       "mxint8")
+#     shared_format = p.get("shared_format", "UE8M0")
+#     vec           = p["parfor_K"]
+
+#     type_a = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(A_dtype))
+#     type_b = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(B_dtype))
+#     scale  = _SCALE_FORMAT_MAP.get(shared_format)
+
+#     if type_a is None:
+#         sys.exit(f"[orchestrator] unknown A_dtype={A_dtype!r}, "
+#                  f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
+#     if type_b is None:
+#         sys.exit(f"[orchestrator] unknown B_dtype={B_dtype!r}, "
+#                  f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
+#     if scale is None:
+#         sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
+#                  f"valid: {_SCALE_FORMAT_MAP}")
+
+#     #out_dir = CHISEL_DIR / "generated" / "fused_dot" / f"{type_a}_{type_b}_{scale}_vec{vec}"
+#     out_dir = DEFAULT_GEN_PE
+#     sbt_cmd = (
+#         f"runMain mx.GenerateFusedDotProduct"
+#         f" --type-a {type_a}"
+#         f" --type-b {type_b}"
+#         f" --scale  {scale}"
+#         f" --vec    {vec}"
+#         f" --out-dir {out_dir}"
+#     )
+
+#     print(f"[orchestrator] Chisel RTL: {type_a} x {type_b}, scale={scale}, vec={vec}")
+#     print(f"[orchestrator] sbt {sbt_cmd}")
+#     result = subprocess.run(["sbt", sbt_cmd], cwd=CHISEL_DIR)
+#     if result.returncode != 0:
+#         sys.exit(f"[orchestrator] Chisel generation failed (exit {result.returncode})")
+
+#     sv_path = out_dir / "BFP_PE.sv"
+#     print(f"[orchestrator] RTL written → {sv_path}")
+#     return out_dir
+
+def run_mac_gen(p: dict) -> Path:
     """
     Derive FusedDotProductUnit parameters from params and invoke sbt to
     generate SystemVerilog.
@@ -185,27 +251,23 @@ def run_chisel_gen(p: dict) -> Path:
       shared_format (int, default 0) → scale format
       parfor_K                       → vectorSize (parallel MACs per cycle)
     """
-    A_dtype       = p.get("A_dtype",       "mxint8")
-    B_dtype       = p.get("B_dtype",       "mxint8")
-    shared_format = p.get("shared_format", "UE8M0")
+    data_type     = p.get("data_type",     0)
+    shared_format = p.get("shared_format", 0)
     vec           = p["parfor_K"]
 
-    type_a = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(A_dtype))
-    type_b = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(B_dtype))
+    type_a = _ELEMENT_TYPE_MAP.get(data_type)
+    type_b = _ELEMENT_TYPE_MAP.get(data_type)
     scale  = _SCALE_FORMAT_MAP.get(shared_format)
 
     if type_a is None:
-        sys.exit(f"[orchestrator] unknown A_dtype={A_dtype!r}, "
-                 f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
-    if type_b is None:
-        sys.exit(f"[orchestrator] unknown B_dtype={B_dtype!r}, "
-                 f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
+        sys.exit(f"[orchestrator] unknown data_type={data_type}, "
+                 f"valid: {_ELEMENT_TYPE_MAP}")
     if scale is None:
         sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
                  f"valid: {_SCALE_FORMAT_MAP}")
 
-    #out_dir = CHISEL_DIR / "generated" / "fused_dot" / f"{type_a}_{type_b}_{scale}_vec{vec}"
-    out_dir = DEFAULT_GEN_PE
+    out_dir = SCRIPT_DIR / "generated" / "fused_dot" / f"{type_a}_{type_b}_{scale}_vec{vec}"
+
     sbt_cmd = (
         f"runMain mx.GenerateFusedDotProduct"
         f" --type-a {type_a}"
@@ -217,12 +279,58 @@ def run_chisel_gen(p: dict) -> Path:
 
     print(f"[orchestrator] Chisel RTL: {type_a} x {type_b}, scale={scale}, vec={vec}")
     print(f"[orchestrator] sbt {sbt_cmd}")
-    result = subprocess.run(["sbt", sbt_cmd], cwd=CHISEL_DIR)
+    result = subprocess.run(["sbt", sbt_cmd], cwd=SCRIPT_DIR)
     if result.returncode != 0:
         sys.exit(f"[orchestrator] Chisel generation failed (exit {result.returncode})")
 
-    sv_path = out_dir / "BFP_PE.sv"
-    print(f"[orchestrator] RTL written → {sv_path}")
+def run_requant_gen(p: dict) -> Path:
+    """
+    Derive RequantFP8 parameters from params and invoke sbt to generate
+    SystemVerilog.
+
+    Mapping from params.hjson:
+      align with quantize_mode in params.hjson 
+      parfor_M                       → tileRows
+      parfor_N                       → tileCols
+      block_size    (int, default 32) → MX block size (16, 32, or 64)
+    """
+    fp8_out_type  = p.get("fp8_out_type",  1)
+    shared_format = p.get("shared_format", 0)
+    tile_rows     = p["parfor_M"]
+    tile_cols     = p["parfor_N"]
+    block_size    = p.get("block_size", 32)
+
+    out_type = _FP8_OUT_TYPE_MAP.get(fp8_out_type)
+    scale    = _SCALE_FORMAT_MAP.get(shared_format)
+
+    if out_type is None:
+        sys.exit(f"[orchestrator] unknown fp8_out_type={fp8_out_type}, "
+                 f"valid: {_FP8_OUT_TYPE_MAP}")
+    if scale is None:
+        sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
+                 f"valid: {_SCALE_FORMAT_MAP}")
+
+    out_dir = SCRIPT_DIR / "generated" / "requant" / \
+              f"{out_type}_{scale}_blk{block_size}_{tile_rows}x{tile_cols}"
+
+    sbt_cmd = (
+        f"runMain mx.GenerateRequantFP8"
+        f" --out-type   {out_type}"
+        f" --scale      {scale}"
+        f" --block-size {block_size}"
+        f" --tile-rows  {tile_rows}"
+        f" --tile-cols  {tile_cols}"
+        f" --out-dir    {out_dir}"
+    )
+
+    print(f"[orchestrator] RequantFP8 RTL: outType={out_type}, scale={scale}, "
+          f"blk={block_size}, {tile_rows}x{tile_cols}")
+    print(f"[orchestrator] sbt {sbt_cmd}")
+    result = subprocess.run(["sbt", sbt_cmd], cwd=SCRIPT_DIR)
+    if result.returncode != 0:
+        sys.exit(f"[orchestrator] RequantFP8 generation failed (exit {result.returncode})")
+
+    print(f"[orchestrator] RequantFP8 RTL written → {out_dir}")
     return out_dir
 
 

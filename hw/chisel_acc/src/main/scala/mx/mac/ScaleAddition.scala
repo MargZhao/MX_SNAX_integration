@@ -39,12 +39,19 @@ class ScaleAddition(val scfg: ScaleAddConfig) extends Module {
   val(expScaleB,fullMantScaleB) = getScaledParts(io.inShareScaleB,scfg.stype)
 
   //扩展位宽防止溢出
-  val safeExpScaleA = expScaleA.zext
-  val safeExpScaleB = expScaleB.zext
-  val safeBias      = scfg.stype.bias.S
+  val safeBias = scfg.stype.bias.S
+
+  // 次正规数 scale（exp=0 且有 mantissa 位）的指数应为 1-bias，而非 0-bias，
+  // 与 CustomOperator 对次正规数元素的处理保持一致。
+  val adjExpScaleA = Mux(expScaleA === 0.U && scfg.stype.mantScaleWidth.U > 0.U,
+                         1.S - safeBias,
+                         expScaleA.zext - safeBias)
+  val adjExpScaleB = Mux(expScaleB === 0.U && scfg.stype.mantScaleWidth.U > 0.U,
+                         1.S - safeBias,
+                         expScaleB.zext - safeBias)
 
   //+& means keep the carry bit
-  val scaleExpSum = (safeExpScaleA +& safeExpScaleB) - (safeBias +& safeBias)
+  val scaleExpSum = adjExpScaleA +& adjExpScaleB
   val scaleMantProduct = fullMantScaleA * fullMantScaleB
 
   val ExpAdd = scaleExpSum +& io.inOpExp

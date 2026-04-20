@@ -107,6 +107,31 @@ void set_mx_streamer_csr(
     }
 }
 
+// Configure WRITER_1 (SHOut – output shared scale, modes 2-5)
+void set_mx_shout_streamer_csr(
+    int32_t delta_local_o_scale,
+    int32_t* SHOutslstride, int32_t* SHOuttlbound, int32_t* SHOuttlstride) {
+
+    // ----------------------------------SHOut (Writer 1)-------------------------------
+    // base ptr for output shared scale
+    csrw_ss(BASE_PTR_WRITER_1_LOW, (uint32_t)(delta_local_o_scale + snrt_l1_next()));
+
+    // spatial strides for SHOut
+    for (int i = 0; i < S_STRIDE_NUM_WRITER_1; i++) {
+        csrw_ss(S_STRIDE_BASE_WRITER_1 + i, SHOutslstride[i]);
+    }
+
+    // loop bounds, from innermost to outermost, for SHOut
+    for (int i = 0; i < T_BOUND_NUM_WRITER_1; i++) {
+        csrw_ss(T_BOUND_BASE_WRITER_1 + i, SHOuttlbound[i]);
+    }
+
+    // temporal strides for SHOut
+    for (int i = 0; i < T_STRIDE_NUM_WRITER_1; i++) {
+        csrw_ss(T_STRIDE_BASE_WRITER_1 + i, SHOuttlstride[i]);
+    }
+}
+
 // Set MX accelerator configuration CSR
 void set_mx_csr(uint32_t mode, uint32_t acc_count, uint32_t out_count) {
     csrw_ss(MX_CSR_MODE,      mode);
@@ -182,17 +207,25 @@ static void snax_print_f32(uint32_t bits) {
     printf("%u.%06u", (unsigned)int_part, (unsigned)frac_part);
 }
 
-// Check the result of MX accelerator output against golden model
+// Check the result of MX accelerator output against golden model.
+// is_fp32 = 1: decode each uint32 word as IEEE-754 fp32 and print the value.
+// is_fp32 = 0: print the raw 0x%08x word (for requantized mxint8/fp8/fp6 output).
 uint32_t check_mx_result(uint32_t* output, uint32_t* output_golden,
-                         int32_t out_len) {
+                         int32_t out_len, int is_fp32) {
     uint32_t err = 0;
     for (int i = 0; i < out_len; i++) {
         int mismatch = (output[i] != output_golden[i]);
-        printf("[%d]: expected ", i);
-        snax_print_f32(output_golden[i]);
-        printf(" (0x%08x), got ", output_golden[i]);
-        snax_print_f32(output[i]);
-        printf(" (0x%08x)%s\n", output[i], mismatch ? " <-- MISMATCH" : "");
+        if (is_fp32) {
+            printf("[%d]: expected ", i);
+            snax_print_f32(output_golden[i]);
+            printf(" (0x%08x), got ", output_golden[i]);
+            snax_print_f32(output[i]);
+            printf(" (0x%08x)%s\n", output[i], mismatch ? " <-- MISMATCH" : "");
+        } else {
+            printf("[%d]: expected 0x%08x, got 0x%08x%s\n",
+                   i, output_golden[i], output[i],
+                   mismatch ? " <-- MISMATCH" : "");
+        }
         if (mismatch) err++;
     }
     return err;

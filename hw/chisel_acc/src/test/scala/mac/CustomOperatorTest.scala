@@ -12,9 +12,12 @@ class CustomOperatorTest extends AnyFunSuite with ChiselScalatestTester {
     val sign = if (((raw >> (t.totalWidth - 1)) & 0x1) == 1) -1.0 else 1.0
     
     if (t.name == "INT8") {
-      // 匹配硬件：将 INT8 视为原码处理 (Sign-Magnitude)
-      val magnitude = raw & ((1 << (t.totalWidth - 1)) - 1)
-      sign * magnitude.toDouble
+      // 匹配硬件：将 INT8 视为补码处理 (2's Complement)
+      // sign = bit[7], magnitude = 2's-complement-negate of bits[6:0] when sign=1
+      val raw7      = raw & 0x7F
+      val signBit   = (raw >> 7) & 1
+      val magnitude = if (signBit == 1) (-raw7) & 0x7F else raw7
+      (if (signBit == 1) -1.0 else 1.0) * magnitude.toDouble
     } else {
       val expMask = (1 << t.elementWidthExp) - 1
       val mantMask = (1 << t.elementWidthMant) - 1
@@ -36,7 +39,10 @@ class CustomOperatorTest extends AnyFunSuite with ChiselScalatestTester {
     def getLogicalParts(raw: Int, t: ElementType) = {
       val sign = (raw >> (t.totalWidth - 1)) & 0x1
       if (t.name == "INT8") {
-        (sign, 0, BigInt(raw & ((1 << (t.totalWidth - 1)) - 1)))
+        // 2's complement: negate lower 7 bits when sign bit is set
+        val raw7      = raw & 0x7F
+        val magnitude = if (sign == 1) (-raw7) & 0x7F else raw7
+        (sign, 0, BigInt(magnitude))
       } else {
         val exp = (raw >> t.elementWidthMant) & ((1 << t.elementWidthExp) - 1)
         val mant = raw & ((1 << t.elementWidthMant) - 1)

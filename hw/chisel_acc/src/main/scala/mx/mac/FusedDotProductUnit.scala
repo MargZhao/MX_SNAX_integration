@@ -70,11 +70,15 @@ class FP32Adder extends Module {
   // If rounding overflows the mantissa, increment the exponent (mantissa wraps to 0)
   val mantCarry = roundedM(23)
   val finalM    = roundedM(22, 0)
-  val finalE    = farExp.zext - resLZC.asSInt + 1.S + mantCarry.zext
+  val finalE_wide = farExp.zext - resLZC.asSInt + 1.S + mantCarry.zext
 
-  // Exact cancellation → zero
-  val isZero = resMag === 0.U
-  io.out := Mux(isZero, 0.U(32.W), Cat(resSign, finalE(7, 0), finalM))
+  // Underflow (denormal result) → flush to zero; overflow → clamp to Infinity
+  val isZero        = resMag === 0.U || finalE_wide <= 0.S
+  val isExpOverflow = finalE_wide >= 255.S
+
+  io.out := Mux(isZero,        0.U(32.W),
+             Mux(isExpOverflow, Cat(resSign, 255.U(8.W), 0.U(23.W)),
+                                Cat(resSign, finalE_wide.asUInt(7, 0), finalM)))
 }
 
 // ============================================================
@@ -105,6 +109,8 @@ class ScaleToFP32(val scfg: ScaleAddConfig) extends Module {
   val mantWidth = scfg.resScaleAddMantWidth
   val expBias   = 127 + mantWidth - 1 - fracBits
 
+  val isZero = io.inMant === 0.U
+
   // Normalization: find leading-one position
   val lzc         = PriorityEncoder(io.inMant.asBools.reverse)
   val shiftedMant = io.inMant << lzc
@@ -120,20 +126,24 @@ class ScaleToFP32(val scfg: ScaleAddConfig) extends Module {
   val mant23    = paddedShift(safeExtractPos, safeExtractPos - 22)
   val guardBit  = paddedShift(safeExtractPos - 23)
   val roundBit  = paddedShift(safeExtractPos - 24)
-  val stickyBit = paddedShift(safeExtractPos - 25, 0).orR
+  val stickyBit = paddedShift(safeExtractPos - 25, 0).orR || (lzc > (mantWidth - 1).U) //补齐sticky 
 
   val roundUp   = guardBit && (mant23(0) || roundBit || stickyBit)
-  val finalMant = Mux(roundUp, mant23 + 1.U, mant23)
+  val roundedM  = mant23 +& roundUp // 使用 +& 保留进位
+  
+  val roundCarry = roundedM(23)
+  val finalMant  = roundedM(22, 0)
 
   // Exponent with bias correction
-  val adjustedExp = io.inExp - lzc.zext + expBias.S
+  val adjustedExp = io.inExp - lzc.zext + expBias.S + roundCarry.zext
   val isOverflow  = adjustedExp >= 255.S
   val isUnderflow = adjustedExp <= 0.S
 
   val finalExp = Mux(isOverflow,  255.U(8.W),
                  Mux(isUnderflow, 0.U(8.W), adjustedExp.asUInt(7, 0)))
 
-  io.out := Cat(io.inSign, finalExp, finalMant)
+  // 5. 零值强制清零；下溢（次正规结果）同样清零（FTZ）
+  io.out := Mux(isZero || isUnderflow, 0.U(32.W), Cat(io.inSign, finalExp, finalMant))
 }
 
 // ============================================================
@@ -188,6 +198,15 @@ class FusedDotProductUnit(val scfg: ScaleAddConfig, val vectorSize: Int, val ist
     // Output
     val validOut = Output(Bool())
     val accOut   = Output(UInt(32.W))
+
+    // ============================================================
+    // 专门为 Trace 增加的测试端口 (仅观察 Lane 0)
+    // ============================================================
+    val debug = if (istest) Some(new Bundle {
+      val all_lanes_fp32    = Output(Vec(vectorSize, UInt(32.W)))
+      val reducedSum        = Output(UInt(32.W))
+      val all_lanes_sa_mant = Output(Vec(vectorSize, UInt(scfg.resScaleAddMantWidth.W)))
+    }) else None
   })
 
   // ------------------------------------------------------------------
@@ -213,6 +232,12 @@ class FusedDotProductUnit(val scfg: ScaleAddConfig, val vectorSize: Int, val ist
     conv.io.inMant := sa.io.outMant
 
     laneResults(i) := conv.io.out
+
+    // 只有在测试模式下连接调试信号
+    io.debug.foreach { d =>
+      d.all_lanes_fp32(i)    := conv.io.out
+      d.all_lanes_sa_mant(i) := sa.io.outMant
+    }
   }
 
   // ------------------------------------------------------------------
@@ -238,7 +263,9 @@ class FusedDotProductUnit(val scfg: ScaleAddConfig, val vectorSize: Int, val ist
   }
 
   val reducedSum = fp32ReduceTree(laneResults.toSeq)
-
+  
+  //for debug------------------------------------------------------------
+  io.debug.foreach(_.reducedSum := reducedSum)
   // ------------------------------------------------------------------
   // FP32 accumulator register
   // ------------------------------------------------------------------
@@ -320,7 +347,7 @@ object TestFusedDotProductMain extends App {
     emitVerilog(
       new FusedDotProductUnit(scfg, vsize, false),
       Array("--target-dir",
-        s"generated/test_fused_dot/${typeA.name}_${typeB.name}_${stype.name}_vec${vsize}")
+        s"generated/${typeA.name}_${typeB.name}_${stype.name}/${typeA.name}_${typeB.name}_${stype.name}_vec${vsize}")
     )
   }
 }

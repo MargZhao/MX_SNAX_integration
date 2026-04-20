@@ -78,7 +78,8 @@ case class ScaleAddConfig(
     //Scale Operate
     val maxScaleAddExp = resOperatorExpWidth max resScaleExpWidth
     val resScaleAddExpWidth = maxScaleAddExp + 2
-    val resScaleAddMantWidth = resOperatorMantWidth + resScaleMantWidth
+    //val resScaleAddMantWidth = resOperatorMantWidth + resScaleMantWidth + 5
+    val resScaleAddMantWidth = 32
 }
 
 
