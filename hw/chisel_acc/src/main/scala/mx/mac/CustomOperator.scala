@@ -18,9 +18,9 @@ class CustomOperator(val cfg: OperatorConfig) extends Module {
   def getExtendedMantissa(in:UInt, etype:ElementType):(UInt,UInt,UInt) = {
     val sign= in(etype.totalWidth-1)
     if(etype.name == "INT8"){
-      //2sComplement version
-      val raw7 = in(etype.elementWidthMant-1, 0)
-      val negMag = (~raw7 + 1.U)(etype.elementWidthMant-1, 0)  // 7-bit 2's complement negate
+      //2sComplement version: INT8 totalWidth=8 → sign at bit7, magnitude in bits[6:0] (7 bits)
+      val raw7 = in(etype.totalWidth-2, 0)
+      val negMag = (~raw7 + 1.U)(etype.totalWidth-2, 0)  // 7-bit 2's complement negate
       val magnitude = Mux(sign.asBool, negMag, raw7)
       (sign, 0.U, magnitude)
     }else{

@@ -51,4 +51,4 @@ $(BUILDDIR):
 	mkdir -p $@
 
 $(BUILDDIR)/%.o: $(SRC_DIR)/%.c | $(BUILDDIR)
-	$(RISCV_CC) $(RISCV_CFLAGS) -c $< -o $@
+	$(RISCV_CC) $(RISCV_CFLAGS) -Wno-shift-op-parentheses -c $< -o $@

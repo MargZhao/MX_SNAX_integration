@@ -557,6 +557,18 @@ _DTYPE_BITS = {
 
 VALID_DTYPES = list(_DATA_CLASSES.keys()) + ['int8']
 
+# Maximum representable VALUE for each element format (used by quantize_mx_v6).
+# ideal_scale = max_abs / _DTYPE_MAX_VAL[dtype]  (NVFP4-style block scale formula)
+_DTYPE_MAX_VAL = {
+    'fp8_e5m2': E5M2.MAX_VAL,      # 57344.0
+    'fp8_e4m3': E4M3.MAX_VAL,      # 448.0
+    'fp6_e3m2': E3M2.MAX_VAL,      # 28.0
+    'fp6_e2m3': E2M3.MAX_VAL,      # 7.5
+    'fp4_e2m1': E2M1.MAX_VAL,      # 6.0
+    'mxint8':   127.0 / 64.0,      # implicit scale 2^-6 → max ≈ 1.984
+    'int8':     127.0,
+}
+
 
 # ---------------------------------------------------------------------------
 # Bit-packing helper
@@ -764,6 +776,63 @@ def _quantize_block_by_scale(block: np.ndarray, dtype: str, scale: float) -> tup
     return q_float, raw
 
 
+def quantize_round_up(ideal_scale: float, scale_fmt: 'ScaleFormat') -> tuple:
+    """Round-up (ceil) variant of scale quantization.
+
+    Guarantees quantized_scale >= ideal_scale so normalised elements never
+    exceed the element format's max representable value (NVFP4 block-scale rule).
+
+    Args:
+        ideal_scale: Unquantised scale value (positive float).
+        scale_fmt:   Target ScaleFormat instance.
+
+    Returns:
+        (quantized_float, raw_uint8)
+    """
+    if ideal_scale <= scale_fmt.min_val:
+        return scale_fmt._raw_to_float(scale_fmt.min_raw), scale_fmt.min_raw
+    if ideal_scale >= scale_fmt.max_val:
+        return scale_fmt._raw_to_float(scale_fmt.saturate_raw), scale_fmt.saturate_raw
+
+    if scale_fmt.mbits == 0:  # UE8M0: pure powers of 2
+        # np.frexp: x = mant * 2^exp_raw, 0.5 <= mant < 1.0
+        mant_s, exp_raw = np.frexp(np.float32(ideal_scale))
+        is_exact = (abs(float(mant_s) - 0.5) < 1e-7)  # ideal_scale is exactly 2^k
+        raw = int(exp_raw - 1 + scale_fmt.bias) if is_exact else int(exp_raw + scale_fmt.bias)
+        raw = int(np.clip(raw, 0, scale_fmt.saturate_raw))
+        return scale_fmt._raw_to_float(raw), raw
+
+    if scale_fmt.ebits == 0:  # UE0M8: fixed-point, step = 1/128
+        raw = int(np.ceil(ideal_scale * 128.0))
+        raw = int(np.clip(raw, 1, 255))
+        return raw / 128.0, raw
+
+    # General UExMy (ebits > 0, mbits > 0)
+    max_exp_b = (1 << scale_fmt.ebits) - 1
+    exp = int(np.floor(np.log2(ideal_scale + 1e-45)))
+    exp_biased = exp + scale_fmt.bias
+
+    if exp_biased <= 0:  # subnormal
+        subnorm_unit = (2.0 ** (1 - scale_fmt.bias)) / (2 ** scale_fmt.mbits)
+        mant = int(np.ceil(ideal_scale / subnorm_unit))
+        if mant >= (1 << scale_fmt.mbits):  # carry into normal range
+            raw = 1 << scale_fmt.mbits       # smallest normal: exp_biased=1, mant=0
+        else:
+            raw = int(np.clip(mant, 0, (1 << scale_fmt.mbits) - 1))
+        return scale_fmt._raw_to_float(raw), raw
+
+    # Normal path
+    frac = ideal_scale / (2.0 ** exp)
+    mant = int(np.ceil((frac - 1.0) * (2 ** scale_fmt.mbits)))
+    if mant >= (1 << scale_fmt.mbits):  # carry
+        mant = 0
+        exp_biased += 1
+    if exp_biased > max_exp_b:
+        return scale_fmt._raw_to_float(scale_fmt.saturate_raw), scale_fmt.saturate_raw
+    raw = (exp_biased << scale_fmt.mbits) | mant
+    return scale_fmt._raw_to_float(raw), raw
+
+
 def quantize_mx(
     arr: np.ndarray,
     dtype: str,
@@ -920,6 +989,101 @@ def quantize_mx_v2(
             for j in range(Col):
                 block = arr[i0:i1, j]
                 sc_f, sc_r = _compute_block_scale(block, dtype, scale_fmt)
+                scale_shared[b, j] = sc_f
+                scale_raw[b, j]    = sc_r
+                q_arr[i0:i1, j], raw_arr[i0:i1, j] = _quantize_block_by_scale(block, dtype, sc_f)
+
+    else:
+        raise ValueError(f"axis must be 0 or 1, got {axis}")
+
+    if packed and dtype not in ('fp8_e4m3', 'fp8_e5m2', 'int8'):
+        packed_rows = [_pack_raw_1d(raw_arr[i], dtype) for i in range(Row)]
+        q_raw = np.stack(packed_rows, axis=0)
+    else:
+        q_raw = raw_arr
+
+    return q_arr, scale_shared, scale_raw, q_raw
+
+
+def quantize_mx_v6(
+    arr: np.ndarray,
+    dtype: str,
+    block_size: int = 32,
+    axis: int = 1,
+    packed: bool = False,
+    scale_format: str = 'UE8M0',
+) -> tuple:
+    """MX block quantization with NVFP4-style round-up block scale.
+
+    Block scale formula:  ideal_scale = max(|block|) / private_elem_max
+    Scale quantization:   round-up (ceil) — guarantees quantized_scale >=
+                          ideal_scale so no element saturates after normalisation.
+
+    与 quantize_mx_v2 的区别：
+      - v2: ideal = 2^(log2(amax) − EMAX)，round-nearest
+      - v6: ideal = amax / elem_max，round-up (与 quantize_torch.py v6 一致)
+
+    Args:
+        arr:          2D float32 input array of shape (Row, Col).
+        dtype:        Element format. One of VALID_DTYPES.
+        block_size:   Number of elements per block along the chosen axis.
+        axis:         0 -> row-wise blocks; 1 -> column-wise blocks (default).
+        packed:       If True, tightly bit-pack the raw element output (FP4/FP6).
+        scale_format: Shared scale encoding. One of VALID_SCALE_FORMATS keys.
+
+    Returns:
+        q_arr        (np.ndarray float32, same shape as arr): dequantized values.
+        scale_shared (np.ndarray float32): quantized scale per block.
+        scale_raw    (np.ndarray uint8):   hardware-ready 8-bit scale encoding.
+        q_raw        (np.ndarray):         per-element raw quantized encoding.
+    """
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.ndim != 2:
+        raise ValueError(f"quantize_mx_v6 expects a 2D array, got shape {arr.shape}")
+    if dtype not in VALID_DTYPES:
+        raise ValueError(f"Unknown dtype {dtype!r}. Choose from {VALID_DTYPES}")
+    if scale_format not in VALID_SCALE_FORMATS:
+        raise ValueError(f"Unknown scale_format {scale_format!r}. Choose from {list(VALID_SCALE_FORMATS)}")
+
+    scale_fmt        = VALID_SCALE_FORMATS[scale_format]
+    private_elem_max = _DTYPE_MAX_VAL[dtype]
+    Row, Col = arr.shape
+    raw_dtype = np.int8 if dtype == 'int8' else np.uint8
+    q_arr   = np.zeros_like(arr)
+    raw_arr = np.zeros((Row, Col), dtype=raw_dtype)
+
+    if axis == 1:
+        n_blocks     = int(np.ceil(Col / block_size))
+        scale_shared = np.zeros((Row, n_blocks), dtype=np.float32)
+        scale_raw    = np.zeros((Row, n_blocks), dtype=np.uint8)
+        for i in range(Row):
+            for b in range(n_blocks):
+                j0 = b * block_size
+                j1 = min(j0 + block_size, Col)
+                block   = arr[i, j0:j1]
+                max_abs = float(np.max(np.abs(block)))
+                if max_abs == 0.0:
+                    sc_f, sc_r = 0.0, 0
+                else:
+                    sc_f, sc_r = quantize_round_up(max_abs / private_elem_max, scale_fmt)
+                scale_shared[i, b] = sc_f
+                scale_raw[i, b]    = sc_r
+                q_arr[i, j0:j1], raw_arr[i, j0:j1] = _quantize_block_by_scale(block, dtype, sc_f)
+
+    elif axis == 0:
+        n_blocks     = int(np.ceil(Row / block_size))
+        scale_shared = np.zeros((n_blocks, Col), dtype=np.float32)
+        scale_raw    = np.zeros((n_blocks, Col), dtype=np.uint8)
+        for b in range(n_blocks):
+            i0 = b * block_size
+            i1 = min(i0 + block_size, Row)
+            for j in range(Col):
+                block   = arr[i0:i1, j]
+                max_abs = float(np.max(np.abs(block)))
+                if max_abs == 0.0:
+                    sc_f, sc_r = 0.0, 0
+                else:
+                    sc_f, sc_r = quantize_round_up(max_abs / private_elem_max, scale_fmt)
                 scale_shared[b, j] = sc_f
                 scale_raw[b, j]    = sc_r
                 q_arr[i0:i1, j], raw_arr[i0:i1, j] = _quantize_block_by_scale(block, dtype, sc_f)

@@ -91,11 +91,15 @@ def data_file_emit(**kwargs):
     #B_fp32 = np.random.uniform(low=-1.0, high=0.0, size=(M, K)).astype(np.float32)
     # A_fp32 = np.tile(np.arange(1, K+1), (M, 1)).astype(np.float32)
     # # B_fp32 = np.tile(np.arange(1, N+1), (K, 1)).astype(np.float32)
-    # A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
-    # B_fp32 = np.eye(K, N, dtype=np.float32)
+    A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
+    B_fp32 = np.eye(K, N, dtype=np.float32)
     
     m_padded = ceil(M / parfor_M) * parfor_M
-    n_padded = ceil(N / parfor_N) * parfor_N
+    # For MX quantize modes the N dimension is tiled by block_size, so pad to block_size boundary
+    if quantize_mode not in (0, 1):
+        n_padded = ceil(N / block_size) * block_size
+    else:
+        n_padded = ceil(N / parfor_N) * parfor_N
     # K 维度 padding 到 block_size 的整数倍，方便后续按 block_size 划分 k-blocks 和生成 shared exponent
     k_padded = ceil(K / parfor_K) * parfor_K
     k_aligned_blocksize = ceil(k_padded / block_size) * block_size# padding k to block_size的整数倍
@@ -107,18 +111,22 @@ def data_file_emit(**kwargs):
     A_dtype = kwargs["A_dtype"]
     B_dtype = kwargs["B_dtype"]
     share_format = kwargs["shared_format"]
+    _qmx = quantize.quantize_mx_v2 if share_format == 0 else quantize.quantize_mx_v6
     data_str += [format_scalar_definition("const char*", "A_dtype", f'"{A_dtype}"')]
     data_str += [format_scalar_definition("const char*", "B_dtype", f'"{B_dtype}"')]
     data_str += [format_scalar_definition("uint32_t", "share_format", share_format)]
-    A_quantized, exp_A_readable, exp_A, A_input = quantize.quantize_mx_v2(A_fp32_padded, A_dtype, block_size=block_size, axis=1, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
-    B_quantized, exp_B_readable, exp_B, B_input = quantize.quantize_mx_v2(B_fp32_padded, B_dtype, block_size=block_size, axis=0, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
+    A_quantized, exp_A_readable, exp_A, A_input = _qmx(A_fp32_padded, A_dtype, block_size=block_size, axis=1, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
+    B_quantized, exp_B_readable, exp_B, B_input = _qmx(B_fp32_padded, B_dtype, block_size=block_size, axis=0, scale_format=_SCALE_FORMAT_MAP.get(share_format, 'UE8M0'))
    
     #######################################################
     ################### CSR  settings #####################
     #######################################################
 
     acc_cnt = np.ceil(k_aligned_blocksize / parfor_K) #ceil if K cannot be divided by parfor_K
-    out_cnt = np.ceil(M / parfor_M) * np.ceil(N / parfor_N)
+    if quantize_mode in (0, 1):
+        out_cnt = np.ceil(M / parfor_M) * np.ceil(N / parfor_N)
+    else:
+        out_cnt = np.ceil(M / parfor_M) * np.ceil(N / block_size)
     data_str += [format_scalar_definition("uint32_t", "ACC_CNT", int(acc_cnt))]
     data_str += [format_scalar_definition("uint32_t", "OUT_CNT", int(out_cnt))]
     #TODO: add real config for mode
@@ -322,7 +330,6 @@ def data_file_emit(**kwargs):
 
 
     #-------------Share scale Out ( bank-aligned)----------------
-    #TODO
     if not (quantize_mode == 0 or quantize_mode == 1):
         SHOut_tile_bytes = parfor_M * shared_bitwidth / bits_per_byte
         SHOut_tile_bytes_aligned = int(ceil(SHOut_tile_bytes / bank_bytes) * bank_bytes)
@@ -330,12 +337,16 @@ def data_file_emit(**kwargs):
             block_tiles = n_padded // block_size
             SHOuttlbound0  = block_tiles;   SHOuttlstride0 = SHOut_tile_bytes_aligned
             SHOuttlbound1  = m_tiles;   SHOuttlstride1 = block_tiles * SHOut_tile_bytes_aligned
+    else:
+        SHOuttlbound0 = 0; SHOuttlstride0 = 0
+        SHOuttlbound1 = 0; SHOuttlstride1 = 0
 
-        data_str += [format_scalar_definition("int32_t", "SHOutslstride0", bankwidth / bits_per_byte)]
-        data_str += [format_scalar_definition("int32_t", "SHOuttlbound0",  SHOuttlbound0)]
-        data_str += [format_scalar_definition("int32_t", "SHOuttlstride0", SHOuttlstride0)]
-        data_str += [format_scalar_definition("int32_t", "SHOuttlbound1",  SHOuttlbound1)]
-        data_str += [format_scalar_definition("int32_t", "SHOuttlstride1", SHOuttlstride1)]
+    # Always emit SHOut streamer params; unused (zero) for modes 0/1
+    data_str += [format_scalar_definition("int32_t", "SHOutslstride0", bankwidth / bits_per_byte)]
+    data_str += [format_scalar_definition("int32_t", "SHOuttlbound0",  SHOuttlbound0)]
+    data_str += [format_scalar_definition("int32_t", "SHOuttlstride0", SHOuttlstride0)]
+    data_str += [format_scalar_definition("int32_t", "SHOuttlbound1",  SHOuttlbound1)]
+    data_str += [format_scalar_definition("int32_t", "SHOuttlstride1", SHOuttlstride1)]
 
 
     #######################################################
@@ -360,14 +371,14 @@ def data_file_emit(**kwargs):
     delta_local_b     = align_addr(delta_local_a + A_data_size, bank_bytes)
     delta_local_scale = align_addr(delta_local_b + B_data_size, bank_bytes)
     delta_local_o     = align_addr(delta_local_scale + scale_data_size, bank_bytes)
+    # Always emit delta_local_o_scale; modes 0/1 place it right after O (unused but valid address)
+    delta_local_o_scale = align_addr(delta_local_o + O_data_size, bank_bytes)
 
-    data_str += [format_scalar_definition("int32_t", "delta_local_a",     delta_local_a)]
-    data_str += [format_scalar_definition("int32_t", "delta_local_b",     delta_local_b)]
-    data_str += [format_scalar_definition("int32_t", "delta_local_scale", delta_local_scale)]
-    data_str += [format_scalar_definition("int32_t", "delta_local_o",     delta_local_o)]
-    if not (quantize_mode == 0 or quantize_mode == 1):
-        delta_local_o_scale = align_addr(delta_local_o + O_data_size, bank_bytes)
-        data_str += [format_scalar_definition("int32_t", "delta_local_o_scale", delta_local_o_scale)]
+    data_str += [format_scalar_definition("int32_t", "delta_local_a",       delta_local_a)]
+    data_str += [format_scalar_definition("int32_t", "delta_local_b",       delta_local_b)]
+    data_str += [format_scalar_definition("int32_t", "delta_local_scale",   delta_local_scale)]
+    data_str += [format_scalar_definition("int32_t", "delta_local_o",       delta_local_o)]
+    data_str += [format_scalar_definition("int32_t", "delta_local_o_scale", delta_local_o_scale)]
 
     #######################################################
     ##################### data arrays #####################
@@ -498,7 +509,7 @@ def data_file_emit(**kwargs):
         scale_fmt_s = _SCALE_FORMAT_MAP.get(share_format, 'UE8M0')
         block_tiles = n_padded // block_size
 
-        _, _, exp_O, D_req_raw = quantize.quantize_mx_v2(
+        _, _, exp_O, D_req_raw = _qmx(
             D_golden, o_dtype, block_size=block_size, axis=1, scale_format=scale_fmt_s
         )
         # exp_O: (m_padded, n_blocks) uint8 biased exponents
@@ -528,6 +539,11 @@ def data_file_emit(**kwargs):
                 O_scale_chunks.append(sc)
         O_scale_golden = np.concatenate(O_scale_chunks).view(np.int8)
         data_str += [format_vector_definition("int8_t", "O_scale_golden", O_scale_golden)]
+    else:
+        # Emit dummy arrays so C code compiles for all modes
+        dummy = np.zeros(1, dtype=np.int8)
+        data_str += [format_vector_definition("int8_t", "O_quant_golden", dummy)]
+        data_str += [format_vector_definition("int8_t", "O_scale_golden", dummy)]
 
     data_str += [format_vector_definition("uint32_t", "O_golden", D_tiled.view(np.uint32))]#need to store as uint32 to align with C library
     # data_str += [format_vector_definition("float", "A_human_readable", A_quantized)]

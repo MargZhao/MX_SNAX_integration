@@ -22,12 +22,12 @@ case class RequantConfig(
 ) {
   require(Seq(16, 32, 64).contains(blockSize),
     s"blockSize must be 16, 32, or 64; got $blockSize")
-  require(Seq(4, 8).contains(tileRows),
-    s"tileRows must be 4 or 8; got $tileRows")
-  require(Seq(4, 8).contains(tileCols),
-    s"tileCols must be 4 or 8; got $tileCols")
-  require(Seq("E5M2", "E4M3").contains(outputType.name),
-    s"outputType must be E5M2 or E4M3; got ${outputType.name}")
+  require(Seq(4, 8, 16).contains(tileRows),
+    s"tileRows must be 4, 8, or 16; got $tileRows")
+  require(Seq(4, 8, 16).contains(tileCols),
+    s"tileCols must be 4, 8, or 16; got $tileCols")
+  require(Seq("E5M2", "E4M3", "E3M2", "E2M3").contains(outputType.name),
+    s"outputType must be E5M2, E4M3, E3M2, or E2M3; got ${outputType.name}")
   require(blockSize % tileCols == 0,
     s"blockSize ($blockSize) must be divisible by tileCols ($tileCols)")
 
@@ -107,6 +107,60 @@ object DefaultRequantConfigs {
     tileCols   = 4,
     outputType = MXFormats.E5M2,
     scaleType  = ScaleFormats.UE4M4
+  )
+
+    /** 4×4 tile, block-32, E5M2 output, UE4M4 scale */
+  val e5m2_block32_4x16_e4m4 = RequantConfig(
+    blockSize  = 32,
+    tileRows   = 4,
+    tileCols   = 16,
+    outputType = MXFormats.E5M2,
+    scaleType  = ScaleFormats.UE4M4
+  )
+
+    /** 4×4 tile, block-32, E5M2 output, UE4M4 scale */
+  val e5m2_block32_4x16_e6m2 = RequantConfig(
+    blockSize  = 32,
+    tileRows   = 4,
+    tileCols   = 16,
+    outputType = MXFormats.E5M2,
+    scaleType  = ScaleFormats.UE6M2
+  )
+
+
+
+  // ── FP6 E3M2 (1+3+2=6 bits) ────────────────────────────────
+  /** 4×4 tile, block-32, E3M2 output, UE8M0 scale */
+  val e3m2_block32_4x4 = RequantConfig(
+    blockSize  = 32,
+    tileRows   = 4,
+    tileCols   = 4,
+    outputType = MXFormats.E3M2
+  )
+
+  /** 8×8 tile, block-32, E3M2 output, UE8M0 scale */
+  val e3m2_block32_8x8 = RequantConfig(
+    blockSize  = 32,
+    tileRows   = 8,
+    tileCols   = 8,
+    outputType = MXFormats.E3M2
+  )
+
+  // ── FP6 E2M3 (1+2+3=6 bits) ────────────────────────────────
+  /** 4×4 tile, block-32, E2M3 output, UE8M0 scale */
+  val e2m3_block32_4x4 = RequantConfig(
+    blockSize  = 32,
+    tileRows   = 4,
+    tileCols   = 4,
+    outputType = MXFormats.E2M3
+  )
+
+  /** 8×8 tile, block-32, E2M3 output, UE8M0 scale */
+  val e2m3_block32_8x8 = RequantConfig(
+    blockSize  = 32,
+    tileRows   = 8,
+    tileCols   = 8,
+    outputType = MXFormats.E2M3
   )
 
   /** Enumerate all non-UE8M0 scale configs for a given element type. */

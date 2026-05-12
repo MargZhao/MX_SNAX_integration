@@ -24,7 +24,7 @@ module snax_mx_alu_shell_wrapper #(
   parameter int unsigned Portwidth =64,
   parameter int unsigned A_PortsNeeded = (A_Width * NumPE + Portwidth - 1) / Portwidth,
   parameter int unsigned B_PortsNeeded = (B_Width * NumPE + Portwidth - 1) / Portwidth,
-  parameter int unsigned OutPortsNeeded = (OutputDataWidth * NumPE + Portwidth - 1) / Portwidth,
+  // parameter int unsigned OutPortsNeeded = (OutputDataWidth * NumPE + Portwidth - 1) / Portwidth,
   // A port 
   parameter int unsigned StreamADataWidth = A_PortsNeeded*Portwidth,
   // B port
@@ -32,7 +32,8 @@ module snax_mx_alu_shell_wrapper #(
   // 1 Shared exponent port
   parameter int unsigned StreamSharedExpDataWidth = (TileRows + TileCols) * 8,//TODO: change the constant 8 into share_width, more semantic
   
-  parameter int unsigned StreamCDataWidth = OutPortsNeeded*Portwidth,
+  parameter int unsigned StreamCDataWidth = ((OutputDataWidth * TileRows * TileCols + Portwidth - 1) / Portwidth) * Portwidth,
+  parameter int unsigned Block_size = (StreamCDataWidth/TileRows)/OutputDataWidth,
   //---------------Overall parameters-----------------------
   parameter int unsigned RegDataWidth = 32,
   parameter int unsigned RegAddrWidth = 32
@@ -53,6 +54,14 @@ module snax_mx_alu_shell_wrapper #(
   output logic [(StreamCDataWidth)-1:0] acc2stream_0_data_o,
   output logic acc2stream_0_valid_o,
   input  logic acc2stream_0_ready_i,
+
+`ifdef SCALE_OUTPUT_EN
+  // Second output stream: shared scale (quantize_mode >= 2)
+  //FIXME: check if this is correct
+  output logic [8*TileRows-1:0]  acc2stream_1_data_o,
+  output logic         acc2stream_1_valid_o,
+  input  logic         acc2stream_1_ready_i,
+`endif
 
   // Ports from streamer to accelerator
   input  logic [(StreamADataWidth)-1:0] stream2acc_0_data_i,
@@ -98,11 +107,10 @@ module snax_mx_alu_shell_wrapper #(
   
   // store the CSR configuration
   logic [RegRWCount-1:0][RegDataWidth-1:0] csr_reg_set_buffer;
-  // TODO: format the register code
+ 
   // CSR 0: precision mode, 6 precision types(INT8,FP8x2,FP6x2,FP4), so 3 bit for operand a and 3 bit for oprand b, reserve 2 bit for operation type
   // CSR 1: accumulation count, how many accumulation to get a final output
   // CSR 2: output count
-  // TODO: variable block size, and shared scaling factor, adding to above CSR or use a new CSR?
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (rst_ni == 1'b0) begin
       csr_reg_set_buffer <= '0;
@@ -117,7 +125,12 @@ module snax_mx_alu_shell_wrapper #(
   assign acc_busy = (current_state == BUSY);
 
   logic output_fire;
-  assign output_fire = acc2stream_0_valid_o && acc2stream_0_ready_i && (acc_busy);
+`ifndef SCALE_OUTPUT_EN
+  assign output_fire = acc2stream_0_valid_o && acc2stream_0_ready_i && acc_busy;
+`else
+  assign output_fire = acc2stream_0_valid_o && acc2stream_0_ready_i
+                     && acc2stream_1_valid_o && acc2stream_1_ready_i && acc_busy;
+`endif
   logic [31:0] output_fire_counter;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -157,24 +170,23 @@ module snax_mx_alu_shell_wrapper #(
   //-------------------------------
 
   // Wiring for accelerator ports
-  // TODO: Inputs, we have 8x8 MAC in total, for 1 mac it can do 1 INT8 op per cycle, or 4 FP8/FP6, or 8 FP4 ops per cycle. 
 
   logic [0:TileRows-1][0:VectorSize-1][A_Width-1:0] A_i;
   logic [0:TileCols-1][0:VectorSize-1][B_Width-1:0] B_i;
 
-  // logic [0:7][0:3][5:0] A_FP6;
-  // logic [0:7][0:3][5:0] B_FP6;
-
-  // logic [0:7][0:7][3:0] A_FP4;
-  // logic [0:7][0:7][3:0] B_FP4;
-  
-  //TODO: further split for NVFP4
+   
   logic [0:TileRows-1][7:0] shared_exp_A;
   logic [0:TileCols-1][7:0] shared_exp_B;
   
-   // Outputs
+  // Outputs
+`ifdef SCALE_OUTPUT_EN
+  logic [0:TileRows-1][0:Block_size-1][OutputDataWidth-1:0] Out;
+  logic [8*TileRows-1:0] shared_exp_out;
+`else
   logic [0:TileRows-1][0:TileCols-1][OutputDataWidth-1:0] Out;
-  logic [7:0] shared_exp_out;
+`endif
+  
+  logic                  valid_out_sig;
 
   //-------------------------------
   //data re-mapping
@@ -196,7 +208,6 @@ module snax_mx_alu_shell_wrapper #(
     end
   endgenerate
   
-  // TODO: asymmetry
   
   //--------------------------------------------------------------
   // Shared default exponents
@@ -215,13 +226,19 @@ module snax_mx_alu_shell_wrapper #(
   // Output data gathering
   always_comb begin
     acc2stream_0_data_o = '0;
+`ifndef SCALE_OUTPUT_EN
     for (int i = 0; i < TileRows; i++) begin
       for (int j = 0; j < TileCols; j++) begin
         acc2stream_0_data_o[(i*TileCols+j)*OutputDataWidth+:OutputDataWidth] = Out[i][j];
       end
     end
-    //TODO: add logic when shared exponent output is neeeded
-    //acc2stream_0_data_o[StreamCDataWidth-1-64+:8] = shared_exp_out;
+`else
+    for (int i = 0; i < TileRows; i++) begin
+      for (int j = 0; j < Block_size; j++) begin
+        acc2stream_0_data_o[(i*Block_size+j)*OutputDataWidth+:OutputDataWidth] = Out[i][j];
+      end
+    end
+`endif
   end
   // always_comb begin
   //   acc2stream_0_data_o = '0;
@@ -239,12 +256,11 @@ module snax_mx_alu_shell_wrapper #(
   logic B_ready;
   logic send_output;//to send accumulation sum
 
-  //TODO: check this part, create own PE wrapper
   // M_out_width is ony Mantissa width of output, so for FP32 should be 23 not 32
   PE_Array_wrapper #(
     .A_WIDTH(A_Width),
     .B_WIDTH(B_Width),
-    .DST_WIDTH(OutputDataWidth),
+    .ELEM_WIDTH(OutputDataWidth),
     .TileRows(TileRows),
     .TileCols(TileCols),
     .VectorSize(VectorSize),
@@ -257,7 +273,6 @@ module snax_mx_alu_shell_wrapper #(
     // Control Signals for inputs
     .A_mode  (csr_reg_set_buffer[0][4:2]),  //  mode for input A
     .B_mode  (csr_reg_set_buffer[0][7:5]),  //  mode for input B
-    //TODO: check if this is needed
     //.prec_mode_quan(csr_reg_set_buffer[0][9:8]),  // Precision mode for quantization of result
     .Result_mode_quan  (csr_reg_set_buffer[0][11:10]),  // FP mode for quantization
     .group_size(csr_reg_set_buffer[0][15:14]), 
@@ -267,11 +282,16 @@ module snax_mx_alu_shell_wrapper #(
     .op_b_i(B_i),
     .shared_exp_A_i(shared_exp_A),
     .shared_exp_B_i(shared_exp_B),
-    .results_o(Out),
-    //TODO: .shared_exp_out_o(shared_exp_out),
+    .result_o  (Out),
+    `ifdef SCALE_OUTPUT_EN
+    .shared_scale_out(shared_exp_out),
+    `endif
+    //.elem_out(),
+    .valid_out(valid_out_sig),
     // Control signal for in/out
     .acc_reset_i(reset_acc),// when send_output is 1, the PE will save the output result and prepare for next accumulation, otherwise it will keep accumulating
     .send_output_i(send_output),// to indicate when to send out the output, this is determined by the accumulation count and the preset count in CSR
+    .accumulation_count_i(csr_reg_set_buffer[1]),
     .A_valid_i(A_valid),//good to go if all input are valid
     .A_ready_o(A_ready),
     .B_valid_i(B_valid),
@@ -291,7 +311,12 @@ module snax_mx_alu_shell_wrapper #(
   logic keep_output;
   logic next_cycle_keep_output;
   // when the streamer is not ready, Keep output valid in the next cycle until streamer is ready
+`ifndef SCALE_OUTPUT_EN
   assign next_cycle_keep_output = acc2stream_0_valid_o && !acc2stream_0_ready_i;
+`else
+  assign next_cycle_keep_output = acc2stream_0_valid_o
+                                && (!acc2stream_0_ready_i || !acc2stream_1_ready_i);
+`endif
   always_ff @(posedge clk_i or negedge rst_ni) begin : blockName
     if (rst_ni == 1'b0) begin
       keep_output <= 1'b0;  // Reset current_state
@@ -338,9 +363,21 @@ module snax_mx_alu_shell_wrapper #(
   assign B_valid = computation_fire;
 
   // after programmed time of success computation, set the send_output signal to 1 only when there is on stall on the output
-  assign send_output = (accumulation_counter == csr_reg_set_buffer[1]) && acc2stream_0_ready_i && acc_busy;
+`ifndef SCALE_OUTPUT_EN
+  assign send_output = (accumulation_counter == csr_reg_set_buffer[1])
+                     && acc2stream_0_ready_i && acc_busy;
+`else
+  assign send_output = (accumulation_counter == csr_reg_set_buffer[1])
+                     && acc2stream_0_ready_i && acc2stream_1_ready_i && acc_busy;
+`endif
 
+`ifndef SCALE_OUTPUT_EN
+  // Passthrough (mode 0/1): output valid when send_output fires (RequantFP8 not used)
   assign acc2stream_0_valid_o = send_output && acc_busy;
+`else
+  // Requant (mode 2+): output valid when RequantFP8 has filled one full block
+  assign acc2stream_0_valid_o = valid_out_sig;
+`endif
 
   assign csr_reg_set_ready_o = ~acc_busy;  // Always ready to accept CSR writes
 
@@ -361,7 +398,10 @@ module snax_mx_alu_shell_wrapper #(
 
   assign csr_reg_ro_set_o[1] = performance_counter;
 
- 
+`ifdef SCALE_OUTPUT_EN
+  assign acc2stream_1_data_o  = shared_exp_out;
+  assign acc2stream_1_valid_o = valid_out_sig;//send_output && acc_busy;
+`endif
 
 
 endmodule

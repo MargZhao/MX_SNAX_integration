@@ -108,10 +108,12 @@ void set_mx_streamer_csr(
 }
 
 // Configure WRITER_1 (SHOut – output shared scale, modes 2-5)
+// Only compiled when the hardware has a second writer (BASE_PTR_WRITER_1_LOW defined).
 void set_mx_shout_streamer_csr(
     int32_t delta_local_o_scale,
     int32_t* SHOutslstride, int32_t* SHOuttlbound, int32_t* SHOuttlstride) {
 
+#ifdef BASE_PTR_WRITER_1_LOW
     // ----------------------------------SHOut (Writer 1)-------------------------------
     // base ptr for output shared scale
     csrw_ss(BASE_PTR_WRITER_1_LOW, (uint32_t)(delta_local_o_scale + snrt_l1_next()));
@@ -130,13 +132,12 @@ void set_mx_shout_streamer_csr(
     for (int i = 0; i < T_STRIDE_NUM_WRITER_1; i++) {
         csrw_ss(T_STRIDE_BASE_WRITER_1 + i, SHOuttlstride[i]);
     }
-}
-
-// Set MX accelerator configuration CSR
-void set_mx_csr(uint32_t mode, uint32_t acc_count, uint32_t out_count) {
-    csrw_ss(MX_CSR_MODE,      mode);
-    csrw_ss(MX_CSR_ACC_COUNT, acc_count);
-    csrw_ss(MX_CSR_OUT_COUNT, out_count);
+#else
+    (void)delta_local_o_scale;
+    (void)SHOutslstride;
+    (void)SHOuttlbound;
+    (void)SHOuttlstride;
+#endif
 }
 
 // Stall until MX accelerator and streamer finish
@@ -150,6 +151,12 @@ void wait_mx_and_streamer() {
     printf("Waiting for Streamer to end...\n");
     while (csrr_ss(STREAMER_BUSY_CSR)) {
     }
+}
+
+void set_mx_csr(uint32_t mode, uint32_t acc_count, uint32_t out_count) {
+    csrw_ss(MX_CSR_MODE,      mode);
+    csrw_ss(MX_CSR_ACC_COUNT, acc_count);
+    csrw_ss(MX_CSR_OUT_COUNT, out_count);
 }
 
 void wait_mx() {

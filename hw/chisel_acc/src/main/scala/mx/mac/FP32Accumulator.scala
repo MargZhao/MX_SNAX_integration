@@ -108,8 +108,7 @@ class ScaleAccumulatorFP32(val scfg: ScaleAddConfig) extends Module {
   // After <<resLZC the implicit-1 lands at bit 27; explicit mantissa bits are 26..4.
   val resLZC = PriorityEncoder(resMag.asBools.reverse)
   val finalM = (resMag << resLZC)(26, 4) // Re-align to 23 bits
-  // .zext prevents biased exponents > 127 being misread as negative.
-  val finalE = farExp.zext - resLZC.asSInt + 1.S
+  val finalE = farExp.zext - resLZC.zext + 1.S
 
   // Exact cancellation (e.g. x + (-x)) yields resMag = 0 -> output 0.0.
   // (Without this, PriorityEncoder on all-zeros returns the last index as

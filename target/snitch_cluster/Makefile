@@ -104,6 +104,10 @@ snax-mx-datagen:
 		--genhw $(SNAX_MX_GEN_CFG) \
 		--output $(MKFILE_DIR)sw/apps/snax-mx/data/data.h
 
+# Include auto-generated RTL defines from orchestrator (e.g. +define+SCALE_OUTPUT_EN).
+# Leading dash: silently ignored if orchestrator has not been run yet.
+-include $(MKFILE_DIR)cfg/snax_mx_defines.mk
+
 # bender_targets.tmp depends on CFG_FILE (the generated hjson),
 # so orchestrator must run first (order-only prerequisite)
 $(GENERATED_DIR)/bender_targets.tmp: | snax-mx-datagen

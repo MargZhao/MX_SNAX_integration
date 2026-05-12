@@ -50,7 +50,12 @@ void set_mx_shout_streamer_csr(
 inline void set_mx_streamer_start() { csrw_ss(STREAMER_START_CSR, 1); }
 
 // Configure MX accelerator CSRs
-void set_mx_csr(uint32_t mode, uint32_t acc_count, uint32_t out_count);
+// inline void set_mx_csr(uint32_t mode, uint32_t acc_count, uint32_t out_count) {
+//     csrw_ss(MX_CSR_MODE,      mode);
+//     csrw_ss(MX_CSR_ACC_COUNT, acc_count);
+//     csrw_ss(MX_CSR_OUT_COUNT, out_count);
+// }
+inline void set_mx_csr(uint32_t mode, uint32_t acc_count, uint32_t out_count);
 
 // Trigger MX accelerator
 inline void set_mx_start() { csrw_ss(MX_CSR_START, 1); }
