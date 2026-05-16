@@ -1,0 +1,397 @@
+% ============================================================
+%  Integration Chapter
+%  Compile with: pdflatex (requires algorithm2e, booktabs,
+%  amsmath, listings, xcolor packages)
+% ============================================================
+
+\section{System Integration}
+\label{sec:integration}
+
+The tensor core is integrated into the SNAX cluster through a unified
+co-design flow that propagates a single parameter specification through
+hardware generation, peripheral configuration, and software test-data
+preparation.  The flow is illustrated in
+Figure~\ref{fig:integration_overview}.
+
+\begin{figure}[h]
+  \centering
+  % TODO: replace with actual flow diagram
+  \fbox{\rule{0pt}{6cm}\rule{0.85\textwidth}{0pt}}
+  \caption{Co-design integration flow.  A single \texttt{params.hjson}
+           drives RTL generation, streamer configuration, and software
+           data generation, ensuring that quantisation semantics are
+           identical across all three layers.}
+  \label{fig:integration_overview}
+\end{figure}
+
+The flow is organised into three layers.
+\begin{enumerate}
+  \item \textbf{Configuration layer}: a single JSON file
+        (\texttt{params.hjson}) encodes both the hardware specification
+        (element formats, scale format, PE-array tile dimensions,
+        block size) and the workload specification (GEMM dimensions,
+        streaming pattern).
+  \item \textbf{Generation layer}: the orchestrator
+        (\texttt{orchestrator.py}) consumes the configuration and drives
+        RTL generation and peripheral-hardware configuration in parallel;
+        the data-generation script (\texttt{datagen.py}) produces
+        hardware-faithful test vectors and CSR parameters.
+  \item \textbf{Runtime layer}: a static C program
+        (\texttt{snax-mx.c}) executes inside the RTL simulation,
+        loading the generated data and comparing hardware outputs
+        against software golden references.
+\end{enumerate}
+
+% ------------------------------------------------------------
+\subsection{Parameter Configuration}
+\label{sec:integration:params}
+
+All configurable quantities are centralised in \texttt{params.hjson}.
+Table~\ref{tab:params} lists the key fields together with their roles
+in downstream components.
+
+\begin{table}[h]
+\centering
+\caption{Key parameters in \texttt{params.hjson} and their downstream
+         effects.}
+\label{tab:params}
+\begin{tabular}{lll}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Downstream effect} \\
+\midrule
+\texttt{A\_dtype}, \texttt{B\_dtype}
+  & string & MAC element format $\to$ Chisel \texttt{--type-a/b};
+             quantisation format in \texttt{datagen.py} \\
+\texttt{quantize\_mode}
+  & int 0--6 & Output requant variant $\to$ Chisel \texttt{--requant-mode};
+               output path in \texttt{datagen.py} \\
+\texttt{shared\_format}
+  & int 0--6 & Scale format (UE8M0\dots UE2M6) $\to$ Chisel
+               \texttt{--scale}; selects quantisation function \\
+\texttt{parfor\_M}, \texttt{parfor\_N}, \texttt{parfor\_K}
+  & int & Tile rows / cols / vector $\to$ Chisel \texttt{--tile-rows/cols/vec};
+          streamer tiling bounds \\
+\texttt{block\_size}
+  & int & MX block size $\to$ Chisel \texttt{--block-size};
+          N-dimension padding, output streamer width \\
+\texttt{M}, \texttt{K}, \texttt{N}
+  & int & GEMM dimensions $\to$ padding, tile counts, CSR values \\
+\texttt{stationary}
+  & int 0--2 & Streaming pattern (output / weight / input stationary)
+               $\to$ streamer loop order \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Because both the hardware generator and the software data generator
+read the same file, every change to a format or geometry parameter
+propagates automatically to all downstream artefacts.
+
+% ------------------------------------------------------------
+\subsection{Hardware Generation}
+\label{sec:integration:hw}
+
+\subsubsection{RTL Generation}
+\label{sec:integration:hw:rtl}
+
+The orchestrator translates \texttt{params.hjson} into a Chisel
+generator invocation according to the mapping in
+Table~\ref{tab:chisel_map}, then calls
+\texttt{sbt runMain mx.GeneratePEArray} to emit the synthesisable
+\texttt{PE\_Array.sv}.
+
+\begin{table}[h]
+\centering
+\caption{Parameter mapping from \texttt{params.hjson} to
+         \texttt{GeneratePEArray} command-line arguments.}
+\label{tab:chisel_map}
+\begin{tabular}{ll}
+\toprule
+\texttt{params.hjson} field & Chisel argument \\
+\midrule
+\texttt{A\_dtype}       & \texttt{--type-a}      \\
+\texttt{B\_dtype}       & \texttt{--type-b}      \\
+\texttt{shared\_format} & \texttt{--scale}       \\
+\texttt{parfor\_K}      & \texttt{--vec}         \\
+\texttt{parfor\_M}      & \texttt{--tile-rows}   \\
+\texttt{parfor\_N}      & \texttt{--tile-cols}   \\
+\texttt{block\_size}    & \texttt{--block-size}  \\
+\texttt{quantize\_mode} & \texttt{--requant-mode}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A static SystemVerilog adaptor wrapper (\texttt{PE\_Array\_wrapper.sv})
+is generated alongside the Chisel output.  Its sole purpose is to
+re-pack the flat scalar Chisel ports
+(\texttt{io\_op\_a\_i\_0}, \texttt{io\_op\_a\_i\_1}, \ldots) into
+the packed multi-dimensional arrays expected by the SNAX shell wrapper.
+All width parameters (\texttt{TileRows}, \texttt{TileCols},
+\texttt{BlockSize}, \texttt{ELEM\_WIDTH}) are derived directly from
+\texttt{params.hjson}, keeping the wrapper in strict alignment with the
+generated Chisel module.
+
+\subsubsection{Peripheral Hardware Configuration}
+\label{sec:integration:hw:cfg}
+
+The orchestrator also computes the streamer and shell configuration
+required by the SNAX cluster toolchain.  All tile-byte widths are
+aligned to the TCDM bank width $W_{\mathrm{bank}}=64$\,bits (8\,bytes).
+Let $b_A$, $b_B$, $b_O$, and $b_S = 8$ denote the element bit-widths
+of operands A, B, output, and the shared scale, respectively.
+
+\paragraph{Tile byte widths.}
+
+\begin{align}
+T_A &= \left\lceil \frac{P_M \cdot P_K \cdot b_A}{8 \cdot 8} \right\rceil \cdot 8
+  \quad \text{(bytes, bank-aligned)} \label{eq:tile_a} \\
+T_B &= \left\lceil \frac{P_K \cdot P_N \cdot b_B}{8 \cdot 8} \right\rceil \cdot 8
+  \label{eq:tile_b} \\
+T_S &= \left\lceil \frac{P_M + P_N}{8} \right\rceil \cdot 8
+  \quad \text{(combined A+B scale tile)} \label{eq:tile_s} \\
+T_O &=
+  \begin{cases}
+    \left\lceil \dfrac{P_M \cdot P_N \cdot b_O}{64} \right\rceil \cdot 8
+      & \text{mode} \in \{0, 1\} \\[6pt]
+    \left\lceil \dfrac{P_M \cdot B \cdot b_O}{64} \right\rceil \cdot 8
+      & \text{mode} \geq 2
+  \end{cases}
+  \label{eq:tile_o}
+\end{align}
+
+where $P_M$, $P_N$, $P_K$ are \texttt{parfor\_M/N/K} and $B$ is
+\texttt{block\_size}.  Mode $\geq 2$ outputs an entire MX block per
+row rather than a $P_M \times P_N$ sub-tile, so the output streamer
+width must use $B$ in place of $P_N$.
+
+\paragraph{Dimension-derived counts.}
+The padded dimensions and tile counts are:
+
+\begin{align}
+\hat{M} &= \left\lceil M / P_M \right\rceil P_M, \quad
+\hat{K} = \left\lceil \left\lceil K / P_K \right\rceil P_K \,/\, B \right\rceil B,
+\quad
+\hat{N} =
+\begin{cases}
+  \lceil N / P_N \rceil P_N & \text{mode} \in \{0,1\} \\
+  \lceil N / B  \rceil B    & \text{mode} \geq 2
+\end{cases}
+\label{eq:padding}
+\\[4pt]
+n_M &= \hat{M}/P_M,\quad
+n_K = \hat{K}/P_K,\quad
+n_B = \hat{K}/B,\quad
+n_N^{\mathrm{tile}} = \hat{N}/P_N,\quad
+n_N^{\mathrm{blk}} = \hat{N}/B
+\label{eq:tile_counts}
+\end{align}
+
+\paragraph{Streamer address-generation bounds (output-stationary).}
+The streamer address-generation unit (AGU) is programmed with a
+multi-level loop nest.  For the output-stationary schedule:
+
+\begin{align}
+% Streamer A
+(\mathit{bound}_0^A,\; \mathit{stride}_0^A) &= (n_K,\; T_A),\quad
+(\mathit{bound}_1^A,\; \mathit{stride}_1^A) = (n_N^{\mathrm{tile}},\; 0),\quad
+(\mathit{bound}_2^A,\; \mathit{stride}_2^A) = (n_M,\; n_K T_A) \label{eq:agu_a}\\
+% Streamer B
+(\mathit{bound}_0^B,\; \mathit{stride}_0^B) &= (n_K,\; T_B),\quad
+(\mathit{bound}_1^B,\; \mathit{stride}_1^B) = (n_N^{\mathrm{tile}},\; n_K T_B),\quad
+(\mathit{bound}_2^B,\; \mathit{stride}_2^B) = (n_M,\; 0) \label{eq:agu_b}\\
+% Streamer O (mode >= 2)
+(\mathit{bound}_0^O,\; \mathit{stride}_0^O) &= (n_N^{\mathrm{blk}},\; T_O),\quad
+(\mathit{bound}_1^O,\; \mathit{stride}_1^O) = (n_M,\; n_N^{\mathrm{blk}} T_O)
+\label{eq:agu_o}
+\end{align}
+
+The scale streamer uses a four-level loop that mirrors the A-streamer
+loop order with an additional innermost dimension to hold the scale
+constant across the $P_K / P_K = 1$ steps of each block:
+
+\begin{equation}
+(\mathit{bound}_0^S, \mathit{stride}_0^S) = (B/P_K,\; 0),\quad
+(\mathit{bound}_1^S, \mathit{stride}_1^S) = (n_B,\; T_S),\quad
+(\mathit{bound}_2^S, \mathit{stride}_2^S) = (n_N^{\mathrm{tile}},\; n_B T_S),\quad
+(\mathit{bound}_3^S, \mathit{stride}_3^S) = (n_M,\; n_N^{\mathrm{tile}} n_B T_S)
+\label{eq:agu_scale}
+\end{equation}
+
+% ------------------------------------------------------------
+\subsection{Software Test Infrastructure}
+\label{sec:integration:sw}
+
+\subsubsection{Input Quantisation}
+\label{sec:integration:sw:quant}
+
+The quantisation reference model in \texttt{quantize.py} must match the
+hardware \texttt{MaxScaleFinder} exactly.  For the UE8M0 scale format
+(\texttt{shared\_format}~$= 0$), the shared scale raw value is:
+
+\begin{equation}
+E = \lfloor \log_2 \max_{i \in \text{block}} |x_i| \rfloor + 127
+\label{eq:scale_hw}
+\end{equation}
+
+This corresponds to function \texttt{quantize\_mx\_v2} in
+\texttt{quantize.py}.  For non-UE8M0 formats (\texttt{shared\_format}~$> 0$),
+the scale is rounded up to guarantee no overflow:
+
+\begin{equation}
+E = \left\lceil \log_2 \frac{\max_i |x_i|}{e_{\max}} \right\rceil + 127
+\label{eq:scale_v6}
+\end{equation}
+
+where $e_{\max}$ is the largest normal value of the element format
+(e.g.\ $57344$ for fp8\_e5m2).  This is implemented by
+\texttt{quantize\_mx\_v6}.
+
+The selection between the two functions is driven by \texttt{shared\_format}:
+
+\begin{equation}
+\texttt{quantize\_fn} =
+\begin{cases}
+  \texttt{quantize\_mx\_v2} & \texttt{shared\_format} = 0 \\
+  \texttt{quantize\_mx\_v6} & \texttt{shared\_format} > 0
+\end{cases}
+\label{eq:quant_select}
+\end{equation}
+
+\subsubsection{Tensor Tiling and Memory Layout}
+\label{sec:integration:sw:tiling}
+
+\texttt{datagen.py} reshapes the quantised tensors into the
+tile-interleaved layout consumed by the streamer AGU.
+Algorithm~\ref{alg:tile_a} shows the procedure for operand~A; operand~B
+follows an analogous pattern with axes transposed.
+
+\begin{algorithm}[h]
+\caption{Tile reordering for operand A}
+\label{alg:tile_a}
+\DontPrintSemicolon
+\KwIn{$\mathbf{A}_{\mathrm{raw}} \in \mathbb{Z}^{\hat{M} \times \hat{K}}$
+      (raw element codes after quantisation)}
+\KwOut{$\mathbf{A}_{\mathrm{mem}}$: bank-aligned tile-interleaved array}
+\BlankLine
+Reshape: $\mathbf{A}' \leftarrow
+  \mathbf{A}_{\mathrm{raw}}.\mathrm{reshape}(n_M,\, P_M,\, n_K,\, P_K)$ \;
+Transpose: $\mathbf{A}'' \leftarrow \mathbf{A}'.{\rm transpose}(0, 2, 1, 3)$
+  \tcp*{shape $(n_M, n_K, P_M, P_K)$}
+Flatten each tile $\mathbf{t} = \mathbf{A}''[m_t, k_t, :, :].\mathrm{flatten}()$ \;
+Bit-pack $\mathbf{t}$ according to \texttt{A\_dtype} (no-op for FP8;
+  4-elems/3-bytes for FP6) \;
+Append $T_A - |\mathbf{t}|$ zero-padding bytes to align to bank boundary \;
+Concatenate all tiles $\rightarrow \mathbf{A}_{\mathrm{mem}}$
+\end{algorithm}
+
+The combined A+B scale array is packed with one entry per
+$(m_{\mathrm{tile}}, n_{\mathrm{tile}}, k_{\mathrm{block}})$ triplet:
+
+\begin{equation}
+\mathbf{s}_{m,n,k} =
+  \bigl[
+    E_A[m P_M : (m{+}1)P_M,\; k] \;\|\;
+    E_B[k,\; n P_N : (n{+}1)P_N] \;\|\;
+    \mathbf{0}_{\mathit{pad}}
+  \bigr]
+\label{eq:scale_pack}
+\end{equation}
+
+where $E_A \in \mathbb{Z}^{\hat{M} \times n_B}$ and
+$E_B \in \mathbb{Z}^{n_B \times \hat{N}}$ are the per-block UE8M0
+exponents of A and B respectively.
+
+\paragraph{Output golden byte ordering.}
+The hardware requantiser emits its output via a Chisel \texttt{Cat}
+expression with row~0 at the most-significant bit:
+
+\begin{equation}
+\mathtt{elem\_out} =
+  \bigl\{e[0][0],\; e[0][1],\; \ldots,\; e[P_M{-}1][B{-}1]\bigr\}_{(P_M \cdot B \cdot w)\text{-bit}}
+\label{eq:cat_hw}
+\end{equation}
+
+Under little-endian memory mapping, bit position $[7{:}0]$ lands at the
+lowest address, so the in-memory layout is:
+
+\begin{equation}
+\mathrm{mem}[P_M B - 1 - (r \cdot B + c)] = e[r][c]
+\label{eq:mem_layout}
+\end{equation}
+
+i.e.\ row $(P_M - 1)$, column $(B-1)$ occupies address offset~0.
+Accordingly, the software golden array must be packed with both axes
+reversed:
+
+\begin{equation}
+\mathbf{O}_{\mathrm{golden}}[m_t, k_t] =
+  \mathrm{pack}\!\left(
+    D_{\mathrm{raw}}[m_t P_M : (m_t{+}1)P_M,\;
+                     k_t B  : (k_t{+}1)B]
+    \,[::-1,\; ::-1]\,.\mathrm{flatten}()
+  \right)
+\label{eq:golden_pack}
+\end{equation}
+
+The output scale array follows the same reversal: within each
+$(m_{\mathrm{tile}}, k_{\mathrm{block}})$ tile, the $P_M$ scale bytes
+are stored in descending row order.
+
+\subsubsection{CSR and Control Parameters}
+\label{sec:integration:sw:csr}
+
+The hardware control registers are computed from the padded dimensions:
+
+\begin{align}
+\mathtt{ACC\_CNT} &= \left\lceil \hat{K} / P_K \right\rceil
+  \label{eq:acc_cnt} \\
+\mathtt{OUT\_CNT} &=
+  \begin{cases}
+    n_M \cdot n_N^{\mathrm{tile}} & \text{mode} \in \{0, 1\} \\
+    n_M \cdot n_N^{\mathrm{blk}}  & \text{mode} \geq 2
+  \end{cases}
+  \label{eq:out_cnt}
+\end{align}
+
+All scalar CSR values, tiling loop bounds, strides, and base addresses
+are written to \texttt{data.h} at data-generation time and statically
+linked into the runtime binary.  The C program reads them as constants,
+ensuring that the hardware control flow matches the parameter values
+used to construct the test data.
+
+% ------------------------------------------------------------
+\subsection{Runtime and Verification}
+\label{sec:integration:runtime}
+
+The static C program \texttt{snax-mx.c} implements the execution
+sequence shown in Algorithm~\ref{alg:runtime}.
+
+\begin{algorithm}[h]
+\caption{Runtime execution flow in \texttt{snax-mx.c}}
+\label{alg:runtime}
+\DontPrintSemicolon
+Copy \texttt{A}, \texttt{B}, \texttt{scale}, and (if mode $\geq 2$)
+  \texttt{O\_scale\_golden} from L2 to TCDM \;
+Write \texttt{ACC\_CNT}, \texttt{OUT\_CNT}, \texttt{MODE},
+  \texttt{QUANTIZE\_MODE} to accelerator CSRs \;
+Write streamer loop bounds and strides to streamer CSRs \;
+Issue \textit{start} signal to SNAX accelerator \;
+\Repeat{accelerator busy signal deasserts}{
+  poll \texttt{io\_busy} \;
+}
+\BlankLine
+\texttt{err} $\leftarrow$ \texttt{check\_mx\_result}(\texttt{local\_o\_quant},
+  \texttt{O\_quant\_golden}, \texttt{O\_data\_size}) \;
+\texttt{err} $+\!\!=$
+  \texttt{check\_mx\_result}(\texttt{local\_o\_scale},
+    \texttt{O\_scale\_golden}, \texttt{O\_scale\_data\_size$/4$}) \;
+\Return \texttt{err}
+\end{algorithm}
+
+The comparison is performed at two granularities.
+\texttt{O\_quant\_golden} verifies the quantised element codes at byte
+level, while \texttt{O\_scale\_golden} verifies the per-block shared
+exponent at 32-bit word level (four scale bytes per bank-aligned tile).
+The simulation is run under Verilator or QuestaSim; the same
+\texttt{data.h} can also be linked against an FPGA build without
+modification.

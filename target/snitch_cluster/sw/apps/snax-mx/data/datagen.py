@@ -84,15 +84,15 @@ def data_file_emit(**kwargs):
     ###################data generation#####################
     #######################################################
     # TODO: make a switch to whether use random gen data or real workload
-    variance = 1
+    variance = 3
     A_fp32 = (np.random.randn(M, K) * variance ).astype(np.float32)
     B_fp32 = (np.random.randn(K, N) * variance ).astype(np.float32)
     # A_fp32 = np.eye(K, N, dtype=np.float32)
     #B_fp32 = np.random.uniform(low=-1.0, high=0.0, size=(M, K)).astype(np.float32)
     # A_fp32 = np.tile(np.arange(1, K+1), (M, 1)).astype(np.float32)
     # # B_fp32 = np.tile(np.arange(1, N+1), (K, 1)).astype(np.float32)
-    A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
-    B_fp32 = np.eye(K, N, dtype=np.float32)
+    # A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
+    # B_fp32 = np.eye(K, N, dtype=np.float32)
     
     m_padded = ceil(M / parfor_M) * parfor_M
     # For MX quantize modes the N dimension is tiled by block_size, so pad to block_size boundary
