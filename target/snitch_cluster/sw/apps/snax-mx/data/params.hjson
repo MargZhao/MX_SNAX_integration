@@ -10,7 +10,7 @@
     block_size: 16
     A_dtype: "fp6_e2m3"
     B_dtype: "mxint8"
-    //0:fp32, 1:bf16, 2: e5m2, 3: e4m3, 4:mxint8, 5: e3m2, 5: e2m3
+    //0:fp32, 1:bf16, 2: e5m2, 3: e4m3, 4:mxint8, 5: e3m2, 6: e2m3
     quantize_mode: 4
     shared_format: 4
     stationary: 0
