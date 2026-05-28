@@ -118,11 +118,11 @@
                 [
                     snax_mx_alu
                 ]
-                snax_tcdm_ports: 22
+                snax_tcdm_ports: 20
                 sparse_interconnect_config:
                 [
                     [
-                        22
+                        20
                         1
                     ]
                 ]
@@ -135,10 +135,10 @@
                     VectorSize: 4
                     RegRWCount: 4
                     RegROCount: 2
-                    A_Width: 6
+                    A_Width: 8
                     B_Width: 8
-                    OutputDataWidth: 8
-                    StreamCDataWidth: 512
+                    OutputDataWidth: 6
+                    StreamCDataWidth: 384
                 }
                 snax_streamer_cfg:
                 {
@@ -215,7 +215,7 @@
             spatial_bounds:
             [
                 [
-                    8
+                    6
                 ]
                 [
                     1
@@ -228,7 +228,7 @@
             ]
             num_channel:
             [
-                8
+                6
                 1
             ]
             fifo_depth:
