@@ -22,15 +22,15 @@ module snax_mx_alu_shell_wrapper #(
   parameter int unsigned A_Width  = 8,
   parameter int unsigned B_Width  = 8,
   parameter int unsigned Portwidth =64,
-  parameter int unsigned A_PortsNeeded = (A_Width * NumPE + Portwidth - 1) / Portwidth,
-  parameter int unsigned B_PortsNeeded = (B_Width * NumPE + Portwidth - 1) / Portwidth,
+  parameter int unsigned A_PortsNeeded = (A_Width * TileRows * VectorSize + Portwidth - 1) / Portwidth,
+  parameter int unsigned B_PortsNeeded = (B_Width * TileCols * VectorSize + Portwidth - 1) / Portwidth,
   // parameter int unsigned OutPortsNeeded = (OutputDataWidth * NumPE + Portwidth - 1) / Portwidth,
   // A port 
   parameter int unsigned StreamADataWidth = A_PortsNeeded*Portwidth,
   // B port
   parameter int unsigned StreamBDataWidth = B_PortsNeeded*Portwidth,
   // 1 Shared exponent port
-  parameter int unsigned StreamSharedExpDataWidth = (TileRows + TileCols) * 8,//TODO: change the constant 8 into share_width, more semantic
+  parameter int unsigned StreamSharedExpDataWidth = ((TileRows + TileCols) * 8 + Portwidth - 1) / Portwidth * Portwidth,//TODO: change the constant 8 into share_width, more semantic
   
   parameter int unsigned StreamCDataWidth = ((OutputDataWidth * TileRows * TileCols + Portwidth - 1) / Portwidth) * Portwidth,
   parameter int unsigned Block_size = (StreamCDataWidth/TileRows)/OutputDataWidth,

@@ -2,13 +2,13 @@
 // Adaptor wrapper around Chisel-emitted PE_Array. Re-packs the flat
 // scalar Chisel ports (io_op_a_i_0, io_op_a_i_1, …) into packed
 // multi-dim arrays expected by snax_mx_alu_shell_wrapper.
-// Config: A=fp8_e5m2 B=fp8_e5m2 scale=UE4M4 4x16 vec4 blk16 requant_mode=6 (fp6_e3m2)
+// Config: A=fp8_e5m2 B=fp8_e5m2 scale=UE4M4 4x16 vec4 blk16 requant_mode=2 (fp8_e5m2)
 `timescale 1ns / 1ps
 
 module PE_Array_wrapper #(
     parameter int unsigned A_WIDTH     = 8,
     parameter int unsigned B_WIDTH     = 8,
-    parameter int unsigned ELEM_WIDTH  = 6,
+    parameter int unsigned ELEM_WIDTH  = 8,
     parameter int unsigned TileRows    = 4,
     parameter int unsigned TileCols    = 16,
     parameter int unsigned VectorSize  = 4,
@@ -39,7 +39,7 @@ module PE_Array_wrapper #(
     input  logic [0:TileRows-1][SCALE_WIDTH-1:0]        shared_exp_A_i,
     input  logic [0:TileCols-1][SCALE_WIDTH-1:0]        shared_exp_B_i,
 
-    // E3M2 requantised output: [TileRows][BlockSize][6] packed, plus one 8-bit shared scale per row.
+    // E5M2 requantised output: [TileRows][BlockSize][8] packed, plus one 8-bit shared scale per row.
     output logic [0:TileRows-1][7:0]                          shared_scale_out,
     output logic [0:TileRows-1][0:BlockSize-1][ELEM_WIDTH-1:0] result_o,
     output logic                                              valid_out
