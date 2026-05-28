@@ -32,7 +32,7 @@ SNITCH_ROOT := $(ROOT)
 SYN_ROOT    := $(ROOT)
 SNAX_CFG_PATH := $(ROOT)/target/snitch_cluster/cfg/
 SNAX_TPL_PATH := $(ROOT)/hw/templates/
-SNAX_TEST_PATH := $(ROOT)/target/snitch_cluster/test/
+SNAX_TEST_PATH ?= $(ROOT)/target/snitch_cluster/test/
 SNAX_CHISEL_ACC_PATH := $(ROOT)/hw/chisel_acc
 SNAX_CHISEL_PATH := $(ROOT)/hw/chisel/
 CFG_FILE = $(shell realpath $(CFG_OVERRIDE))
@@ -401,7 +401,7 @@ bin/snitch_cluster.vcs: ${VCS_SOURCES} ${TB_SRCS} $(TB_CC_SOURCES) $(TB_ASM_SOUR
 # DC Compiler #
 ###############
 
-.PHONY: gen-syn clean-syn gen-mem-cfg
+.PHONY: gen-syn clean-syn gen-mem-cfg package-syn
 
 gen-syn:
 	mkdir -p $(SYN_BUILDDIR)
@@ -412,6 +412,36 @@ gen-syn:
 gen-mem-cfg:
 	mkdir -p $(SYN_BUILDDIR)
 	$(CLUSTER_GEN) -c ${CFG_OVERRIDE} -o $(SYN_BUILDDIR) --mem
+
+# Self-contained synthesis source package for cross-environment transfer via git.
+# The synthesis host needs neither Bender nor Docker: it just unpacks and runs DC.
+#   work-syn/pickle/                       staged tree: rtl/ + pickle.f + run_area.tcl
+#   syn_export/snax_mx_cluster_syn.tar.gz  committed bundle (tracked, git-transferable)
+# Consume on the DC host:  tar xzf <tar> && cd pickle && dc_shell -f run_area.tcl
+SYN_PKG_DIR    := $(SYN_BUILDDIR)/pickle
+SYN_EXPORT_DIR := $(MKFILE_DIR)syn_export
+SYN_PKG_TAR    := $(SYN_EXPORT_DIR)/snax_mx_cluster_syn.tar.gz
+SYN_DC_SCRIPT  := $(MKFILE_DIR)syn/run_area.tcl
+
+package-syn: PKG_ROOT := $(abspath $(ROOT))
+package-syn: $(GENERATED_DIR)/bender_targets.tmp
+	rm -rf $(SYN_PKG_DIR)
+	mkdir -p $(SYN_PKG_DIR)/rtl $(SYN_EXPORT_DIR)
+	${BENDER} script flist-plus ${SYN_BENDER} > $(SYN_PKG_DIR)/pickle.f
+	@grep '^/' $(SYN_PKG_DIR)/pickle.f | while read f; do \
+		rel=$${f#$(PKG_ROOT)/}; dst=$(SYN_PKG_DIR)/rtl/$$rel; \
+		mkdir -p "$$(dirname "$$dst")"; cp "$$f" "$$dst"; \
+	done
+	@grep '^+incdir+' $(SYN_PKG_DIR)/pickle.f | sed 's/^+incdir+//' | sort -u | while read d; do \
+		rel=$${d#$(PKG_ROOT)/}; dst=$(SYN_PKG_DIR)/rtl/$$rel; \
+		mkdir -p "$$dst"; cp -r "$$d"/. "$$dst"/; \
+	done
+	sed -i 's|^+incdir+$(PKG_ROOT)/|+incdir+rtl/|; s|^$(PKG_ROOT)/|rtl/|' $(SYN_PKG_DIR)/pickle.f
+	cp $(SYN_DC_SCRIPT) $(SYN_PKG_DIR)/run_area.tcl
+	tar czf $(SYN_PKG_TAR) -C $(SYN_BUILDDIR) pickle
+	@echo "---"
+	@du -sh $(SYN_PKG_DIR) $(SYN_PKG_TAR)
+	@echo "Committed bundle: $(SYN_PKG_TAR)"
 
 clean-syn: clean-work
 	rm -rf $(SYN_BUILDDIR)
