@@ -59,7 +59,7 @@ high; see §7). SPM (blackboxed) has NO PT power → compute separately (§5).
 
 ## 4. ⭐ Bucketing — map EVERY instance (this is where "others" usually bloats)
 
-Fig.8 buckets: **SPM / MX core / Data streamers / DMA / CPU / ICache / others**.
+Buckets (Fig.8 + **Peripheral** pulled out of others): **SPM / MX core / Data streamers / DMA / CPU / ICache / Peripheral / others**.
 The design has two subtrees under `i_snax_mx_cluster`:
 - `i_cluster` — Snitch cluster (cores, I$, TCDM, DMA, interconnect)
 - `i_snax_core_0_acc_0_snax_mx_alu` — the MX accelerator (MX core + streamers)
@@ -70,13 +70,14 @@ instance subtree → one bucket), per this table. Paths are relative to
 
 | Bucket | Instance subtree(s) | Note |
 |---|---|---|
-| **SPM** | `i_cluster.gen_tcdm_super_bank[0..3]` (all `tc_sram` banks); `i_cluster.i_snitch_data_mem` | SRAM. Blackboxed → power/area from datasheet (§5). |
-| **CPU** | `i_cluster.gen_core[0]` **and** `i_cluster.gen_core[1]` → their `i_snitch_cc.i_snitch` (RISC-V core) + FPU + `i_sync_*` | ⚠ **SUBTRACT the DMA subtree** (next row) — it is nested inside `gen_core[1]`. |
+| **SPM** | `i_cluster.gen_tcdm_super_bank[0..3]` (all `tc_sram` banks); `i_cluster.i_snitch_data_mem`; the per-bank AMO shims (`*amo*`, 32× atomic front-ends on the TCDM banks — memory-side logic) | SRAM (blackboxed → area/power from datasheet, §5) + bank access logic. |
+| **CPU** | `i_cluster.gen_core[0]` **and** `i_cluster.gen_core[1]` → their `i_snitch_cc.i_snitch` (RISC-V core) + FPU + `*muldiv*` (int mul/div unit) + `i_sync_*` | ⚠ **SUBTRACT the DMA subtree** (next row) — it is nested inside `gen_core[1]`. |
 | **DMA** | `i_cluster.gen_core[1].i_snitch_cc.gen_dma.*` (iDMA engine); `i_cluster.i_axi_dma_xbar`; `i_cluster.i_axi_to_mem_dma`; `i_cluster.i_dma_interconnect` | ⚠ iDMA is **nested inside gen_core[1]** — carve it out or CPU double-counts. |
 | **ICache** | `i_cluster.gen_hive[0].i_snitch_hive.*` | It is named `i_snitch_hive` (shared I$ + frontend), NOT "icache". |
 | **MX core** (= tensor core) | **The WHOLE accelerator's CSR + compute:** `i_snax_core_0_acc_0_snax_mx_alu.i_snax_mx_alu_csrman_wrapper` (**CSR manager** — the accelerator config registers) + `.i_snax_mx_alu_reqrspman_*` (CSR bus interface) + `.i_snax_mx_alu_shell_wrapper` (PE_Array/`BFP_PE` **array** + `RequantFP8` **requant** + FSM); plus the CSR-routing glue `i_cluster.gen_snax_control_connection[*]` | Tensor core = **CSR manager + array + requant** (per design intent). Everything CSR-related for the accelerator lives here, NOT in others. |
 | **Data streamers** | `i_snax_core_0_acc_0_snax_mx_alu.i_snax_mx_alu_streamer_wrapper.*` + `i_cluster.gen_yes_snax_tcdm_interconnect.*` | Readers/writer + AGU + FIFOs + the sparse interconnect (streamer ↔ TCDM access path). |
-| **others** | remaining `i_cluster` children: `i_axi_to_reg`, `i_axi_to_tcdm`, `i_cluster_xbar`, `i_cut_ext_*` (AXI cuts), `i_reqrsp_mux_*`, `i_reqrsp_to_axi_*`, `i_popcount_*`, `i_snitch_barrier`, `i_snitch_cluster_peripheral` | AXI cuts/xbars, reqrsp muxes, barrier, periph. Should be a few %. |
+| **Peripheral** | `i_cluster.i_snitch_cluster_peripheral` (+ `i_cluster.i_snitch_barrier`) | Cluster control/measurement infra: **performance counters** (per-hart, toggle every cycle — the dominant part), HW barrier, CLINT/wakeup, scratch/ctrl regs. Pulled out of "others" as its own bar. Note in the caption: mostly perf-counters (measurement, not the accelerator's function). |
+| **others** | remaining `i_cluster` children: `i_axi_to_reg`, `i_axi_to_tcdm`, `i_cluster_xbar`, `i_cut_ext_*` (AXI cuts), `i_reqrsp_mux_*`, `i_reqrsp_to_axi_*`, `i_popcount_*`, misc muxes/glue | AXI cuts/xbars, reqrsp muxes, glue. Should now be small (the big peripheral is its own bucket). |
 
 Note: `i_cluster.gen_yes_snax_tcdm_interconnect` (the sparse interconnect between
 the ~40 streamer ports and the TCDM) is assigned to **Data streamers** — it is
