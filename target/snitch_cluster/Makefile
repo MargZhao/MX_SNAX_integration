@@ -443,6 +443,85 @@ package-syn: $(GENERATED_DIR)/bender_targets.tmp
 	@du -sh $(SYN_PKG_DIR) $(SYN_PKG_TAR)
 	@echo "Committed bundle: $(SYN_PKG_TAR)"
 
+# ---------------------------------------------------------------------------
+# Per-run bundle: the full system RTL (synthesis/DUT view — same scope as
+# package-syn and the KULeuven Precision-Scalable_MX hw/ tree, just automated
+# via `bender script flist-plus`) plus THIS run's sim VCD and sw config, in one
+# self-contained folder for power/energy analysis. One folder per run_thru.
+#   run_bundles/<label>_<stamp>/rtl/       flattened, self-contained system RTL
+#   run_bundles/<label>_<stamp>/pickle.f   relative-path filelist (compile order)
+#   run_bundles/<label>_<stamp>/sim.vcd    switching activity from this run
+#   run_bundles/<label>_<stamp>/{data.h,params.hjson,snax_mx_cluster.hjson,manifest.txt}
+# VCD path overridable: `make package-run RUN_VCD=/path/to/sim.vcd`.
+RUN_BUNDLE_ROOT := $(MKFILE_DIR)run_bundles
+# Local ext4 VCD (NOT git-transferred; converted to SAIF for the bundle).
+RUN_VCD         ?= /tmp/snax_run.vcd
+RUN_PARAMS      := $(MKFILE_DIR)sw/apps/snax-mx/data/params.hjson
+RUN_DATA_H      := $(MKFILE_DIR)sw/apps/snax-mx/data/data.h
+RUN_GEN_CFG     := $(MKFILE_DIR)cfg/snax_mx_cluster.hjson
+RUN_LABEL_PY    := $(MKFILE_DIR)sw/apps/snax-mx/run_label.py
+# Tracked dir for git-transferable bundle tarballs.
+RUN_EXPORT_DIR  := $(MKFILE_DIR)run_export
+# NOTE: the bundle keeps the FULL-cluster VCD (gzipped) so a downstream per-block
+# power breakdown (SPM/MX/streamer/DMA/CPU/ICache) sees every module. Windowing
+# happens at SIM time via SNAX_VCD_START_CYCLE/STOP_CYCLE (see run_thru.sh), NOT
+# here — package-run only gzips whatever VCD it is given.
+# For provenance, pass the window that produced RUN_VCD so it's recorded in the
+# manifest:  make package-run RUN_WIN_START=6000 RUN_WIN_STOP=18257
+RUN_WIN_START   ?=
+RUN_WIN_STOP    ?=
+
+.PHONY: package-run
+package-run: PKG_ROOT := $(abspath $(ROOT))
+package-run: $(GENERATED_DIR)/bender_targets.tmp
+	@label=`python3 $(RUN_LABEL_PY) $(RUN_PARAMS)`; \
+	stamp=`date +%Y%m%d_%H%M%S`; dst=$(RUN_BUNDLE_ROOT)/$${label}_$${stamp}; \
+	echo "[package-run] bundling → $$dst"; \
+	rm -rf "$$dst"; mkdir -p "$$dst/rtl"; \
+	$(BENDER) script flist-plus $(SYN_BENDER) > "$$dst/pickle.f"; \
+	grep '^/' "$$dst/pickle.f" | while read f; do \
+	  rel=$${f#$(PKG_ROOT)/}; o="$$dst/rtl/$$rel"; mkdir -p "`dirname "$$o"`"; cp "$$f" "$$o"; \
+	done; \
+	grep '^+incdir+' "$$dst/pickle.f" | sed 's/^+incdir+//' | sort -u | while read i; do \
+	  rel=$${i#$(PKG_ROOT)/}; o="$$dst/rtl/$$rel"; mkdir -p "$$o"; cp -r "$$i"/. "$$o"/ 2>/dev/null || true; \
+	done; \
+	sed -i 's|^+incdir+$(PKG_ROOT)/|+incdir+rtl/|; s|^$(PKG_ROOT)/|rtl/|' "$$dst/pickle.f"; \
+	cp $(RUN_PARAMS) "$$dst/params.hjson"; \
+	[ -f $(MKFILE_DIR)sw/apps/snax-mx/SYNTHESIS_AGENT_GUIDE.md ] && \
+	  cp $(MKFILE_DIR)sw/apps/snax-mx/SYNTHESIS_AGENT_GUIDE.md "$$dst/SYNTHESIS_AGENT_GUIDE.md" || true; \
+	[ -f $(RUN_DATA_H) ]  && cp $(RUN_DATA_H)  "$$dst/data.h" || true; \
+	[ -f $(RUN_GEN_CFG) ] && cp $(RUN_GEN_CFG) "$$dst/snax_mx_cluster.hjson" || true; \
+	if [ -f "$(RUN_VCD)" ]; then \
+	    echo "[package-run] gzip VCD (`du -h "$(RUN_VCD)" | cut -f1`) → sim.vcd.gz ..."; \
+	    gzip -c "$(RUN_VCD)" > "$$dst/sim.vcd.gz"; \
+	    gz=`du -m "$$dst/sim.vcd.gz" | cut -f1`; \
+	    echo "[package-run] sim.vcd.gz = $${gz} MB"; \
+	    if [ "$$gz" -gt 100 ]; then \
+	      echo "[package-run][WARN] $${gz} MB > GitHub 100 MB/file limit — window the VCD"; \
+	      echo "[package-run][WARN]   (SNAX_VCD_STOP_CYCLE/START_CYCLE) or use git-LFS / a self-hosted remote."; \
+	    fi; \
+	  else echo "[package-run][warn] VCD not found: $(RUN_VCD) — skipped (run sim with --vcd first)"; fi; \
+	{ echo "label     : $$label"; echo "stamp     : $$stamp"; \
+	  echo "git       : `git -C $(ROOT) rev-parse --short HEAD 2>/dev/null`"; \
+	  echo "cfg       : $(CFG_OVERRIDE)"; \
+	  echo "rtl_files  : `grep -c '^rtl/' "$$dst/pickle.f"`"; \
+	  echo "vcd_gz_MB  : `du -m "$$dst/sim.vcd.gz" 2>/dev/null | cut -f1 || echo NA`"; \
+	  echo "vcd_window : cycles [$(if $(RUN_WIN_START),$(RUN_WIN_START),0), $(if $(RUN_WIN_STOP),$(RUN_WIN_STOP),END)] (SIM-time; printf verification excluded)"; \
+	  echo "--- params.hjson ---"; cat $(RUN_PARAMS); } > "$$dst/manifest.txt"; \
+	{ echo "# Power bundle: full system RTL + gzipped sim VCD (sim.vcd.gz)."; \
+	  echo "# On the DC/PT-PX host:"; \
+	  echo "#   gunzip sim.vcd.gz"; \
+	  echo "#   vcd2saif -input sim.vcd -output activity.saif   # vendor tool"; \
+	  echo "#   read_saif activity.saif -instance <path>        # (or PT-PX read_vcd sim.vcd)"; \
+	  echo "# NOTE: git rejects files >100 MB (GitHub). If sim.vcd.gz is over,"; \
+	  echo "#   window the sim (SNAX_VCD_STOP_CYCLE) or use git-LFS."; \
+	  echo "# RTL filelist: pickle.f (paths relative to rtl/).";  } > "$$dst/README.txt"; \
+	mkdir -p $(RUN_EXPORT_DIR); \
+	tar czf "$(RUN_EXPORT_DIR)/$${label}_$${stamp}.tar.gz" -C $(RUN_BUNDLE_ROOT) "$${label}_$${stamp}"; \
+	echo "---"; du -sh "$$dst" "$(RUN_EXPORT_DIR)/$${label}_$${stamp}.tar.gz"; \
+	echo "[package-run] folder : $$dst"; \
+	echo "[package-run] git tar: $(RUN_EXPORT_DIR)/$${label}_$${stamp}.tar.gz  (commit this to transfer)"
+
 clean-syn: clean-work
 	rm -rf $(SYN_BUILDDIR)
 
