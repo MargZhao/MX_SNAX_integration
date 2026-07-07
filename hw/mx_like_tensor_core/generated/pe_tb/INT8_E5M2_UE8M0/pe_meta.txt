@@ -1,0 +1,10 @@
+act INT8
+weight E5M2
+scale UE8M0
+vec 4
+K 64
+m_acc 15
+op_a_w 32
+op_b_w 32
+acc_w 24
+scale_w 8

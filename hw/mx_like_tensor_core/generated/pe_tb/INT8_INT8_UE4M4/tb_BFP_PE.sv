@@ -1,0 +1,166 @@
+// AUTO-GENERATED per-PE power/functional testbench — do not edit.
+// Combo: INT8 x INT8 / UE4M4   K=64 bs=16 vec=4
+// Stimulus: production quantize_mx_v6 (fitted distribution).  Golden = ideal
+// dequantized dot product (float64).  Drives BFP_PE and dumps a VCD.
+`timescale 1ns/1ps
+module tb_BFP_PE;
+  localparam int N      = 16;
+  localparam int M_ACC  = 15;
+  localparam real GOLDEN = -0.1282949298620224;
+  localparam real REL_TOL = 0.05;
+  localparam real ABS_TOL = 1.0e-3;
+
+  reg                      clock;
+  reg                      reset;
+  reg                      io_validIn;
+  reg                      io_resetAcc;
+  reg  [31:0]           io_op_a_i;
+  reg  [31:0]           io_op_b_i;
+  reg  [7:0]            io_share_exp_A_i;
+  reg  [7:0]            io_share_exp_B_i;
+  wire                     io_validOut;
+  wire [23:0]           io_accOut;
+
+  BFP_PE dut (
+    .clock            (clock),
+    .reset            (reset),
+    .io_op_a_i        (io_op_a_i),
+    .io_op_b_i        (io_op_b_i),
+    .io_share_exp_A_i (io_share_exp_A_i),
+    .io_share_exp_B_i (io_share_exp_B_i),
+    .io_validIn       (io_validIn),
+    .io_resetAcc      (io_resetAcc),
+    .io_validOut      (io_validOut),
+    .io_accOut        (io_accOut)
+  );
+
+  // stimulus memories
+  reg [31:0] stim_a  [0:N-1];
+  reg [31:0] stim_b  [0:N-1];
+  reg [7:0]  stim_sa [0:N-1];
+  reg [7:0]  stim_sb [0:N-1];
+
+  // clock: 10ns period, posedge is the active edge
+  initial clock = 1'b0;
+  always #5 clock = ~clock;
+
+  integer i;
+  integer sgn, ex;
+  reg [M_ACC-1:0] mant;
+  real got, relerr;
+
+  initial begin
+    $dumpfile("tb_BFP_PE_INT8_INT8_UE4M4.vcd");
+    $dumpvars(0, tb_BFP_PE);
+
+    stim_a[0] = 32'd1264185619;
+    stim_a[1] = 32'd654541860;
+    stim_a[2] = 32'd3043482937;
+    stim_a[3] = 32'd1896035803;
+    stim_a[4] = 32'd2984628750;
+    stim_a[5] = 32'd1579822755;
+    stim_a[6] = 32'd1928035273;
+    stim_a[7] = 32'd1259523041;
+    stim_a[8] = 32'd4152753153;
+    stim_a[9] = 32'd4194240003;
+    stim_a[10] = 32'd83687429;
+    stim_a[11] = 32'd33293042;
+    stim_a[12] = 32'd4177986284;
+    stim_a[13] = 32'd185105422;
+    stim_a[14] = 32'd4060153864;
+    stim_a[15] = 32'd49478143;
+    stim_b[0] = 32'd103020807;
+    stim_b[1] = 32'd877073635;
+    stim_b[2] = 32'd48151514;
+    stim_b[3] = 32'd3636262017;
+    stim_b[4] = 32'd1613161422;
+    stim_b[5] = 32'd549682932;
+    stim_b[6] = 32'd2881161555;
+    stim_b[7] = 32'd3986887894;
+    stim_b[8] = 32'd370025206;
+    stim_b[9] = 32'd1580333271;
+    stim_b[10] = 32'd827678897;
+    stim_b[11] = 32'd2086464529;
+    stim_b[12] = 32'd2937608312;
+    stim_b[13] = 32'd447360000;
+    stim_b[14] = 32'd3568381469;
+    stim_b[15] = 32'd3748967139;
+    stim_sa[0] = 8'd91;
+    stim_sa[1] = 8'd91;
+    stim_sa[2] = 8'd91;
+    stim_sa[3] = 8'd91;
+    stim_sa[4] = 8'd85;
+    stim_sa[5] = 8'd85;
+    stim_sa[6] = 8'd85;
+    stim_sa[7] = 8'd85;
+    stim_sa[8] = 8'd143;
+    stim_sa[9] = 8'd143;
+    stim_sa[10] = 8'd143;
+    stim_sa[11] = 8'd143;
+    stim_sa[12] = 8'd132;
+    stim_sa[13] = 8'd132;
+    stim_sa[14] = 8'd132;
+    stim_sa[15] = 8'd132;
+    stim_sb[0] = 8'd38;
+    stim_sb[1] = 8'd38;
+    stim_sb[2] = 8'd38;
+    stim_sb[3] = 8'd38;
+    stim_sb[4] = 8'd26;
+    stim_sb[5] = 8'd26;
+    stim_sb[6] = 8'd26;
+    stim_sb[7] = 8'd26;
+    stim_sb[8] = 8'd35;
+    stim_sb[9] = 8'd35;
+    stim_sb[10] = 8'd35;
+    stim_sb[11] = 8'd35;
+    stim_sb[12] = 8'd34;
+    stim_sb[13] = 8'd34;
+    stim_sb[14] = 8'd34;
+    stim_sb[15] = 8'd34;
+
+    // init
+    reset = 1'b0;                 // async-assert (active-low): clear registers
+    io_validIn = 1'b0; io_resetAcc = 1'b0;
+    io_op_a_i = 0; io_op_b_i = 0; io_share_exp_A_i = 0; io_share_exp_B_i = 0;
+    repeat (2) @(negedge clock);
+    reset = 1'b1;                 // release async reset -> operate
+
+    // synchronous accumulator clear
+    io_resetAcc = 1'b1; @(negedge clock);
+    io_resetAcc = 1'b0;
+    if (io_validOut !== 1'b0) $display("[tb] WARN validOut not low after resetAcc");
+
+    // drive the accumulation, one vector per cycle
+    for (i = 0; i < N; i = i + 1) begin
+      io_op_a_i        = stim_a[i];
+      io_op_b_i        = stim_b[i];
+      io_share_exp_A_i = stim_sa[i];
+      io_share_exp_B_i = stim_sb[i];
+      io_validIn       = 1'b1;
+      @(negedge clock);
+      if (io_validOut !== 1'b1) $display("[tb] WARN validOut not high at cycle %0d", i);
+    end
+    io_validIn = 1'b0;
+    @(negedge clock);
+    if (io_validOut !== 1'b0) $display("[tb] WARN validOut not low after deassert");
+
+    // decode narrow-FP accOut and self-check
+    sgn  = io_accOut[23];
+    ex   = io_accOut[22 -: 8];
+    mant = io_accOut[M_ACC-1:0];
+    if (ex == 0) got = 0.0;
+    else got = (sgn ? -1.0 : 1.0) * (1.0 + mant / (2.0 ** M_ACC)) * (2.0 ** (ex - 127));
+    relerr = (GOLDEN == 0.0) ? got : ((got - GOLDEN) / GOLDEN);
+    if (relerr < 0) relerr = -relerr;
+
+    $display("[tb INT8_INT8_UE4M4] accOut=%h  got=%f  golden=%f  relErr=%f%%",
+             io_accOut, got, GOLDEN, relerr * 100.0);
+    if (((got > GOLDEN ? got - GOLDEN : GOLDEN - got)) <= REL_TOL * (GOLDEN < 0 ? -GOLDEN : GOLDEN) + ABS_TOL)
+      $display("[tb INT8_INT8_UE4M4] RESULT: PASS");
+    else
+      $display("[tb INT8_INT8_UE4M4] RESULT: FAIL");
+
+    repeat (2) @(negedge clock);
+    $finish;
+  end
+endmodule

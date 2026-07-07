@@ -1,0 +1,10 @@
+act E5M2
+weight E5M2
+scale UE4M4
+vec 4
+K 64
+m_acc 13
+op_a_w 32
+op_b_w 32
+acc_w 22
+scale_w 8
