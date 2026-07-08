@@ -36,7 +36,7 @@ class PEArrayWrapper(cfg: PEArrayConfig) extends Module {
     // peValidOut has fired this many times since acc_reset_i, the wrapper
     // pulses RequantFP8.valid_in (resultDone) so it samples a complete dot
     // product instead of a partial sum.  cfg.K is no longer used at runtime —
-    // it only sizes the PE accumulator's mantissa width via AccPrecision.
+    // the PE accumulator M_acc now comes from macc_final_selection.csv (CSV).
     val accumulation_count_i = Input(UInt(32.W))
 
     // ── Handshakes ────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ class PEArrayWrapper(cfg: PEArrayConfig) extends Module {
       val pe = Module(new FDPU(
         cfg.macCfg, cfg.vectorSize, K = cfg.K,
         treeArch = peTreeArch,
-        accMantBits = cfg.accMantBitsOverride,
+        accMantBits = cfg.effAccMantBits,
         istest = false))
 
       pe.io.op_a_i        := io.op_a_i(r)
@@ -120,7 +120,7 @@ class PEArrayWrapper(cfg: PEArrayConfig) extends Module {
   // clears it; one full dot product takes K/vectorSize PE-cycles.  The
   // threshold is supplied at RUNTIME via io.accumulation_count_i (= K/vec,
   // driven by snax shell's csr_reg_set_buffer[1]) — NOT derived from cfg.K
-  // at elaboration time.  cfg.K is now used only by AccPrecision to size
+  // at elaboration time.  cfg.K no longer sizes M_acc (that comes from the CSV);
   // the FP32 accumulator mantissa for the worst-case K.
   //
   // Reset convention matches FDPU / RequantFP8: the
@@ -236,7 +236,7 @@ class PEArrayWrapperINT8(cfg: PEArrayINT8Config) extends Module {
       val pe = Module(new FDPU(
         cfg.macCfg, cfg.vectorSize, K = cfg.K,
         treeArch = peTreeArch,
-        accMantBits = cfg.accMantBitsOverride,
+        accMantBits = cfg.effAccMantBits,
         istest = false))
 
       pe.io.op_a_i        := io.op_a_i(r)
@@ -363,6 +363,7 @@ class PEArrayWrapperBF16(cfg: PEArrayBF16Config) extends Module {
       val pe = Module(new FDPU(
         cfg.macCfg, cfg.vectorSize, K = cfg.K,
         treeArch = TreeArch.Generic,
+        accMantBits = cfg.effAccMantBits,
         // baseline cycleFP (cpb=1 implicit)
         istest = false))
 
@@ -489,6 +490,7 @@ class PEArrayWrapperFP32(cfg: PEArrayFP32Config) extends Module {
       val pe = Module(new FDPU(
         cfg.macCfg, cfg.vectorSize, K = cfg.K,
         treeArch = TreeArch.Generic,
+        accMantBits = cfg.effAccMantBits,
         // baseline cycleFP (cpb=1 implicit)
         istest = false))
 

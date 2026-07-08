@@ -16,8 +16,10 @@ class FusedScaleAccumulatorSpec extends AnyFlatSpec with ChiselScalatestTester {
   val scfg       = ScaleAddConfig(MXFormats.E4M3, MXFormats.E2M1, ScaleFormats.UE5M3)
   val vectorSize = 8
   val K          = 32
+  // M_acc is explicit now (K-based AccPrecision removed); the accumulator-width
+  // correctness this spec checks is independent of the exact value.
   val w          = FDPUWidthMath(scfg, vectorSize, K,
-                     accMantBits = -1, noEarlyRNE = false, widenUE8M0 = true)
+                     accMantBits = 12, noEarlyRNE = false, widenUE8M0 = true)
 
   val mantBits  = w.actualAccMantBits
   val effTreeM  = w.effectiveTreeOutMantW

@@ -39,7 +39,7 @@ import chisel3.util.Cat
  *
  *  Accumulator precision:
  *    The accumulator register stores a reduced-precision FP value with `accMantBits`
- *    mantissa bits (default: computed by AccPrecision.recommended from K and scfg).
+ *    mantissa bits (resolved from data/macc_final_selection.csv by the emit flow).
  *    This is sufficient because accumulation noise stays below the requant noise floor
  *    when accMantBits ≥ rqFloor + ½·log₂(K).
  *    accOut is (1+8+accMantBits) bits wide — the native register width with no
@@ -49,8 +49,8 @@ import chisel3.util.Cat
  *  @param scfg        ScaleAddConfig describing element and scale types.
  *  @param vectorSize  Number of parallel MACs per cycle (>= 1).
  *  @param K           Accumulation depth.  Used to derive the default accMantBits.
- *  @param accMantBits Accumulator mantissa bits.  `-1` = auto (AccPrecision.recommended).
- *                     Override to 23 for full FP32 accumulation.
+ *  @param accMantBits Accumulator mantissa bits — required; resolved from
+ *                     data/macc_final_selection.csv by the emit flow. 23 = FP32.
  *  @param treeArch    Tree architecture.  Only Generic is deployed (the
  *                     specialised arch variants were pruned).
  *  @param istest      Enable debug ports for simulation visibility.
@@ -67,7 +67,7 @@ class FDPU(
   val scfg:        ScaleAddConfig,
   val vectorSize:  Int,
   val K:           Int      = 32,
-  val accMantBits: Int      = -1,
+  val accMantBits: Int,          // required — resolved from macc_final_selection.csv (no K-based auto)
   val treeArch:    TreeArch = TreeArch.Generic,
   val istest:      Boolean  = false,
   val noEarlyRNE:  Boolean  = false,
@@ -293,11 +293,35 @@ class FDPU(
 // (DSECompareEmitMain) moved to mx.mac.deferred_archs.DSEEmitDriver
 // since its 4-way comparison includes the dropped blockdef/kulisch archs.
 
+/** M_acc source of truth = data/macc_final_selection.csv — the same table the
+ *  deployed EmitTensorCore reads.  The K-based AccPrecision heuristic has been
+ *  removed, so every emit resolves M_acc from this CSV. */
+object MaccCsv {
+  private lazy val table: Map[(String, String, String), Int] = {
+    val f = new java.io.File("data/macc_final_selection.csv")
+    require(f.exists, s"M_acc CSV not found: ${f.getAbsolutePath}")
+    val src   = scala.io.Source.fromFile(f)
+    val lines = try src.getLines().toList finally src.close()
+    val hdr   = lines.head.split(",").map(_.trim)
+    val (iA, iB, iS, iM) = (hdr.indexOf("act"), hdr.indexOf("weight"), hdr.indexOf("scale"), hdr.indexOf("m_acc"))
+    require(iA >= 0 && iB >= 0 && iS >= 0 && iM >= 0,
+      "macc_final_selection.csv must have columns act,weight,scale,m_acc")
+    lines.drop(1).flatMap { ln =>
+      val c = ln.split(",").map(_.trim)
+      if (c.length > iM) Some((c(iA), c(iB), c(iS)) -> c(iM).toInt) else None
+    }.toMap
+  }
+  def lookup(act: String, weight: String, scale: String): Int =
+    table.getOrElse((act, weight, scale),
+      throw new NoSuchElementException(s"M_acc for ($act,$weight,$scale) not in data/macc_final_selection.csv"))
+}
+
 object FDPUMain extends App {
+  val (act, weight, scale) = ("E2M1", "E2M1", "UE5M3")
   val scfg       = ScaleAddConfig(MXFormats.E2M1, MXFormats.E2M1, ScaleFormats.UE5M3)
   val vectorSize = 4
   emitVerilog(
-    new FDPU(scfg, vectorSize, istest = false),
+    new FDPU(scfg, vectorSize, accMantBits = MaccCsv.lookup(act, weight, scale), istest = false),
     Array("--target-dir", s"generated/fdpu_test/default_vec${vectorSize}")
   )
 }
@@ -323,11 +347,10 @@ object PEEmitMain extends App {
   val outdir = arg("--outdir", s"generated/pe_tb/${act}_${weight}_${scale}_vec${vec}_K${K}")
 
   val scfg = ScaleAddConfig(elem(act), elem(weight), scal(scale))
-  emitVerilog(new FDPU(scfg, vec, K = K, istest = false), Array("--target-dir", outdir))
+  val mAcc = MaccCsv.lookup(act, weight, scale)      // from macc_final_selection.csv
+  emitVerilog(new FDPU(scfg, vec, K = K, accMantBits = mAcc, istest = false),
+              Array("--target-dir", outdir))
 
-  // Resolve the elaborated widths via the pure width-math (no Builder context).
-  val mAcc  = FDPUWidthMath(scfg, vec, K, accMantBits = -1,
-                            noEarlyRNE = false, widenUE8M0 = true).actualAccMantBits
   val opAW  = vec * elem(act).totalWidth
   val opBW  = vec * elem(weight).totalWidth
   val accW  = 1 + 8 + mAcc
@@ -363,9 +386,9 @@ object AllPETbEmitMain extends App {
   } {
     val scfg   = ScaleAddConfig(elem(a), elem(w), scal(s))
     val outdir = s"generated/pe_tb/${a}_${w}_${s}"
-    emitVerilog(new FDPU(scfg, vec, K = K, istest = false), Array("--target-dir", outdir))
-    val mAcc = FDPUWidthMath(scfg, vec, K, accMantBits = -1,
-                             noEarlyRNE = false, widenUE8M0 = true).actualAccMantBits
+    val mAcc   = MaccCsv.lookup(a, w, s)             // from macc_final_selection.csv
+    emitVerilog(new FDPU(scfg, vec, K = K, accMantBits = mAcc, istest = false),
+                Array("--target-dir", outdir))
     val meta = s"act $a\nweight $w\nscale $s\nvec $vec\nK $K\n" +
                s"m_acc $mAcc\nop_a_w ${vec * elem(a).totalWidth}\nop_b_w ${vec * elem(w).totalWidth}\n" +
                s"acc_w ${1 + 8 + mAcc}\nscale_w ${scal(s).totalScaleWidth}\n"
@@ -394,7 +417,7 @@ object AllFDPUMain extends App {
       s"scale ${stype.name}, vectorSize=$vsize"
     )
     emitVerilog(
-      new FDPU(scfg, vsize, istest = false),
+      new FDPU(scfg, vsize, accMantBits = MaccCsv.lookup(typeA.name, typeB.name, stype.name), istest = false),
       Array("--target-dir",
         s"generated/post_scale/${typeA.name}_${typeB.name}_${stype.name}_vec${vsize}")
     )

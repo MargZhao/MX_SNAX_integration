@@ -1,6 +1,7 @@
 act E2M1
 weight E2M1
 scale UE4M4
+m_acc 10
 wA 4
 wB 4
 scale_width 8

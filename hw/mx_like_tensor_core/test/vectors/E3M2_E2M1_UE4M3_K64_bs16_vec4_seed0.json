@@ -2,6 +2,7 @@
  "act": "E3M2",
  "weight": "E2M1",
  "scale": "UE4M3",
+ "m_acc": 11,
  "wA": 6,
  "wB": 4,
  "scale_width": 7,

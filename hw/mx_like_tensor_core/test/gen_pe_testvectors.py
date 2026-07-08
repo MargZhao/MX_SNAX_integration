@@ -64,6 +64,29 @@ class _ScaleFormatN(quantize.ScaleFormat):
 if "UE4M3" not in quantize.VALID_SCALE_FORMATS:
     quantize.VALID_SCALE_FORMATS["UE4M3"] = _ScaleFormatN(4, 3)
 
+# Authoritative M_acc source = data/macc_final_selection.csv (same table the
+# deployed EmitTensorCore reads). The K-based AccPrecision heuristic is gone.
+_MACC_CSV = os.path.join(os.path.dirname(__file__), "../data/macc_final_selection.csv")
+
+
+def _load_macc_csv(path=_MACC_CSV):
+    import csv
+    m = {}
+    with open(path) as f:
+        r = csv.DictReader(f)
+        for row in r:
+            a = row.get("act") or row.get("typeA")
+            w = row.get("weight") or row.get("typeB")
+            s = row.get("scale")
+            v = row.get("m_acc") or row.get("M_sel")
+            if a and w and s and v:
+                m[(a, w, s)] = int(v)
+    return m
+
+
+_MACC = _load_macc_csv()
+
+
 # Manifest element name (E4M3, INT8, …) → quantize dtype string.
 NAME2DTYPE = {
     "E5M2": "fp8_e5m2",
@@ -115,6 +138,10 @@ def build_vector(act, weight, scale, *, K, block_size, vector_size,
     if block_size % vector_size != 0:
         raise ValueError(f"block_size({block_size}) must be a multiple of vector_size({vector_size})")
 
+    if (act, weight, scale) not in _MACC:
+        raise ValueError(f"({act},{weight},{scale}) not in {_MACC_CSV} — cannot resolve M_acc")
+    m_acc = _MACC[(act, weight, scale)]
+
     dtA, dtB = NAME2DTYPE[act], NAME2DTYPE[weight]
     wA = quantize._DTYPE_BITS.get(dtA, 8)
     wB = quantize._DTYPE_BITS.get(dtB, 8)
@@ -158,6 +185,7 @@ def build_vector(act, weight, scale, *, K, block_size, vector_size,
 
     return {
         "act": act, "weight": weight, "scale": scale,
+        "m_acc": m_acc,                              # from macc_final_selection.csv
         "wA": wA, "wB": wB, "scale_width": scale_w,
         "K": K, "block_size": block_size, "vector_size": vector_size,
         "n_cycles": n_cycles,
@@ -208,7 +236,7 @@ def write_tv(path, vec):
     scaleB' line per accumulate cycle (op_a/op_b are decimal, LSB = lane 0).
     """
     with open(path, "w") as f:
-        for k in ("act", "weight", "scale", "wA", "wB", "scale_width",
+        for k in ("act", "weight", "scale", "m_acc", "wA", "wB", "scale_width",
                   "K", "block_size", "vector_size", "n_cycles",
                   "seed", "workload"):
             f.write(f"{k} {vec[k]}\n")

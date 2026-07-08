@@ -3,8 +3,8 @@ weight E5M2
 scale UE7M1
 vec 4
 K 64
-m_acc 13
+m_acc 11
 op_a_w 32
 op_b_w 32
-acc_w 22
+acc_w 20
 scale_w 8

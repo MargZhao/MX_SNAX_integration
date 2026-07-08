@@ -1,6 +1,7 @@
 act INT8
 weight INT8
 scale UE8M0
+m_acc 13
 wA 8
 wB 8
 scale_width 8

@@ -1,0 +1,3 @@
+# Verilator build trees (regenerate with test/gen_all_sv.py --run)
+*/obj_dir/
+*/*.d

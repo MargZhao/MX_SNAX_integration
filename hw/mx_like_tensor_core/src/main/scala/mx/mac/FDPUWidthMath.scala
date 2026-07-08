@@ -9,7 +9,7 @@ import chisel3.util.log2Ceil
  *  Centralises the per-config widths that all three Module classes need so
  *  the math lives in exactly one place:
  *    - SAFETY_G                guard/round/sticky bits below M_acc
- *    - actualAccMantBits       M_acc (auto-selected if input < 0)
+ *    - actualAccMantBits       M_acc (required; from macc_final_selection.csv)
  *    - treeExtraMantBits       tree-exit mantissa-widening beyond raw product
  *    - effectiveTreeOutMantW   tree-exit mantissa width
  *    - effectiveScaleAddMantW  ScaleComposition output mantissa width
@@ -25,8 +25,8 @@ import chisel3.util.log2Ceil
  *
  *  @param scfg        ScaleAddConfig describing element and scale types.
  *  @param vectorSize  Number of parallel MACs per cycle (>= 1).
- *  @param K           Accumulation depth (used to derive auto M_acc).
- *  @param accMantBits M_acc override. `-1` → auto via AccPrecision.recommended.
+ *  @param K           Accumulation depth (no longer sizes M_acc).
+ *  @param accMantBits M_acc (required; from macc_final_selection.csv).
  *  @param noEarlyRNE  Counterfactual: skip tree-exit RNE, widen tree mantissa
  *                     to absMagW, force M_acc=23 (FP32).
  *  @param widenUE8M0  UE8M0-only optimisation: widen tree-exit to M_acc bits
@@ -36,7 +36,7 @@ final case class FDPUWidthMath(
   scfg:        ScaleAddConfig,
   vectorSize:  Int,
   K:           Int,
-  accMantBits: Int     = -1,
+  accMantBits: Int,
   noEarlyRNE:  Boolean = false,
   widenUE8M0:  Boolean = true,
 ) {
@@ -56,12 +56,13 @@ final case class FDPUWidthMath(
   val absMagW: Int =
     scfg.resOperatorMantWidth + scfg.productExpRange + log2N
 
-  /** Resolved accumulator mantissa width.  noEarlyRNE forces 23 (FP32). */
+  /** Resolved accumulator mantissa width.  noEarlyRNE forces 23 (FP32).
+   *  M_acc must be supplied explicitly (from macc_final_selection.csv via the
+   *  emit flow) — the K-based AccPrecision heuristic has been removed. */
   val actualAccMantBits: Int = {
     if (noEarlyRNE) 23
-    else if (accMantBits == -1) AccPrecision.recommended(scfg, K)
     else { require(accMantBits >= 1 && accMantBits <= 23,
-                   s"accMantBits must be in [1, 23], got $accMantBits")
+                   s"accMantBits must be in [1, 23] (from macc_final_selection.csv), got $accMantBits")
            accMantBits }
   }
 

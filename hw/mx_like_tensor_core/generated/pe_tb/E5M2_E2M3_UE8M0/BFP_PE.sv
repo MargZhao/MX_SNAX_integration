@@ -234,21 +234,21 @@ module FixedFPTree_exp7_mant7_out11_vec4_range31(	// src/main/scala/mx/mac/Custo
   assign io_out_mant = isZero ? 11'h0 : roundedM[11] ? 11'h400 : roundedM[10:0];	// src/main/scala/mx/mac/CustomReduction.scala:49:7, :169:25, :200:33, :201:32, :202:23, :204:19, :216:23
 endmodule
 
-module DirectToFP11b_E5M2_x_E2M3_UE8M0_wide11(	// src/main/scala/mx/mac/FP32Common.scala:439:7
-  input         io_inOpSign,	// src/main/scala/mx/mac/FP32Common.scala:466:14
-  input  [6:0]  io_inOpExp,	// src/main/scala/mx/mac/FP32Common.scala:466:14
-  input  [10:0] io_inOpMant,	// src/main/scala/mx/mac/FP32Common.scala:466:14
-  input  [7:0]  io_inShareScaleA,	// src/main/scala/mx/mac/FP32Common.scala:466:14
-                io_inShareScaleB,	// src/main/scala/mx/mac/FP32Common.scala:466:14
-  output [19:0] io_out	// src/main/scala/mx/mac/FP32Common.scala:466:14
+module DirectToFP11b_E5M2_x_E2M3_UE8M0_wide11(	// src/main/scala/mx/mac/FP32Common.scala:434:7
+  input         io_inOpSign,	// src/main/scala/mx/mac/FP32Common.scala:461:14
+  input  [6:0]  io_inOpExp,	// src/main/scala/mx/mac/FP32Common.scala:461:14
+  input  [10:0] io_inOpMant,	// src/main/scala/mx/mac/FP32Common.scala:461:14
+  input  [7:0]  io_inShareScaleA,	// src/main/scala/mx/mac/FP32Common.scala:461:14
+                io_inShareScaleB,	// src/main/scala/mx/mac/FP32Common.scala:461:14
+  output [19:0] io_out	// src/main/scala/mx/mac/FP32Common.scala:461:14
 );
 
   wire [8:0] _expTotal_T_6 =
     {{2{io_inOpExp[6]}}, io_inOpExp} + {1'h0, io_inShareScaleA} + {1'h0, io_inShareScaleB}
-    - 9'h7A;	// src/main/scala/mx/mac/FP32Common.scala:481:50, :482:50, :483:{39,69}, :487:29
-  wire       isZero = io_inOpMant == 11'h0;	// src/main/scala/mx/mac/FP32Common.scala:485:32, :501:42
-  wire       isOverflow = _expTotal_T_6 == 9'hFF;	// src/main/scala/mx/mac/FP32Common.scala:483:69, :486:29
-  wire       isUnder = $signed(_expTotal_T_6) < 9'sh1;	// src/main/scala/mx/mac/FP32Common.scala:483:69, :487:29
+    - 9'h7A;	// src/main/scala/mx/mac/FP32Common.scala:476:50, :477:50, :478:{39,69}, :482:29
+  wire       isZero = io_inOpMant == 11'h0;	// src/main/scala/mx/mac/FP32Common.scala:480:32, :496:42
+  wire       isOverflow = _expTotal_T_6 == 9'hFF;	// src/main/scala/mx/mac/FP32Common.scala:478:69, :481:29
+  wire       isUnder = $signed(_expTotal_T_6) < 9'sh1;	// src/main/scala/mx/mac/FP32Common.scala:478:69, :482:29
   assign io_out =
     isZero | isUnder
       ? 20'h0
@@ -257,7 +257,7 @@ module DirectToFP11b_E5M2_x_E2M3_UE8M0_wide11(	// src/main/scala/mx/mac/FP32Comm
            ? 19'h7F800
            : {isOverflow ? 8'hFF : isUnder | isZero ? 8'h0 : _expTotal_T_6[7:0],
               io_inOpMant[9:0],
-              1'h0}};	// src/main/scala/mx/mac/FP32Common.scala:439:7, :483:69, :485:32, :486:29, :487:29, :489:19, :490:{19,28,64}, :496:22, :500:{16,24}, :501:{16,42}, :502:42
+              1'h0}};	// src/main/scala/mx/mac/FP32Common.scala:434:7, :478:69, :480:32, :481:29, :482:29, :484:19, :485:{19,28,64}, :491:22, :495:{16,24}, :496:{16,42}, :497:42
 endmodule
 
 module FPNAdder(	// src/main/scala/mx/mac/FP32Common.scala:233:7

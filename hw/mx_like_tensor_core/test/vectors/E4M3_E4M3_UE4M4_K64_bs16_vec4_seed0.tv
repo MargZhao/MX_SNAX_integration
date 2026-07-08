@@ -1,6 +1,7 @@
 act E4M3
 weight E4M3
 scale UE4M4
+m_acc 12
 wA 8
 wB 8
 scale_width 8

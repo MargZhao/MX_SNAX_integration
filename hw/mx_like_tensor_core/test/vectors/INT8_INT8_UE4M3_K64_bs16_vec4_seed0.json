@@ -2,6 +2,7 @@
  "act": "INT8",
  "weight": "INT8",
  "scale": "UE4M3",
+ "m_acc": 14,
  "wA": 8,
  "wB": 8,
  "scale_width": 7,

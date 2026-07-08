@@ -5,7 +5,7 @@
 `timescale 1ns/1ps
 module tb_BFP_PE;
   localparam int N      = 16;
-  localparam int M_ACC  = 11;
+  localparam int M_ACC  = 10;
   localparam real GOLDEN = -0.11078643798828125;
   localparam real REL_TOL = 0.05;
   localparam real ABS_TOL = 1.0e-3;
@@ -19,7 +19,7 @@ module tb_BFP_PE;
   reg  [7:0]            io_share_exp_A_i;
   reg  [7:0]            io_share_exp_B_i;
   wire                     io_validOut;
-  wire [19:0]           io_accOut;
+  wire [18:0]           io_accOut;
 
   BFP_PE dut (
     .clock            (clock),
@@ -145,8 +145,8 @@ module tb_BFP_PE;
     if (io_validOut !== 1'b0) $display("[tb] WARN validOut not low after deassert");
 
     // decode narrow-FP accOut and self-check
-    sgn  = io_accOut[19];
-    ex   = io_accOut[18 -: 8];
+    sgn  = io_accOut[18];
+    ex   = io_accOut[17 -: 8];
     mant = io_accOut[M_ACC-1:0];
     if (ex == 0) got = 0.0;
     else got = (sgn ? -1.0 : 1.0) * (1.0 + mant / (2.0 ** M_ACC)) * (2.0 ** (ex - 127));

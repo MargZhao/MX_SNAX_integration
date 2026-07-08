@@ -159,36 +159,36 @@ module ScaleComposition_INT8_to_INT8_scale_UE7M1_wide14(	// src/main/scala/mx/ma
        * {2'h0, |(io_inShareScaleB[7:1]), io_inShareScaleB[0]}} * {4'h0, io_inOpMant};	// src/main/scala/mx/mac/ScaleComposition.scala:13:7, :60:17, :64:20, :65:29, :87:41, :90:38
 endmodule
 
-module FusedScaleAcc_INT8_x_INT8_UE7M1_acc15b(	// src/main/scala/mx/mac/FP32Common.scala:324:7
-  input  [23:0] io_accIn,	// src/main/scala/mx/mac/FP32Common.scala:336:14
-  input         io_termSign,	// src/main/scala/mx/mac/FP32Common.scala:336:14
-  input  [9:0]  io_termExp,	// src/main/scala/mx/mac/FP32Common.scala:336:14
-  input  [17:0] io_termMant,	// src/main/scala/mx/mac/FP32Common.scala:336:14
-  output [23:0] io_accOut	// src/main/scala/mx/mac/FP32Common.scala:336:14
+module FusedScaleAcc_INT8_x_INT8_UE7M1_acc14b(	// src/main/scala/mx/mac/FP32Common.scala:319:7
+  input  [22:0] io_accIn,	// src/main/scala/mx/mac/FP32Common.scala:331:14
+  input         io_termSign,	// src/main/scala/mx/mac/FP32Common.scala:331:14
+  input  [9:0]  io_termExp,	// src/main/scala/mx/mac/FP32Common.scala:331:14
+  input  [17:0] io_termMant,	// src/main/scala/mx/mac/FP32Common.scala:331:14
+  output [22:0] io_accOut	// src/main/scala/mx/mac/FP32Common.scala:331:14
 );
 
-  wire [10:0]   etBiased = {io_termExp[9], io_termExp} + 11'h8E;	// src/main/scala/mx/mac/FP32Common.scala:351:29
-  wire [17:0]   accJust = {|(io_accIn[22:15]), io_accIn[14:0], 2'h0};	// src/main/scala/mx/mac/FP32Common.scala:355:26, :356:{29,42}, :367:31
-  wire [10:0]   _GEN = {3'h0, io_accIn[22:15]};	// src/main/scala/mx/mac/FP32Common.scala:355:26, :368:21, :374:41
+  wire [10:0]   etBiased = {io_termExp[9], io_termExp} + 11'h8E;	// src/main/scala/mx/mac/FP32Common.scala:346:29
+  wire [17:0]   accJust = {|(io_accIn[21:14]), io_accIn[13:0], 3'h0};	// src/main/scala/mx/mac/FP32Common.scala:350:26, :351:{29,42}, :362:31, :363:21
+  wire [10:0]   _GEN = {3'h0, io_accIn[21:14]};	// src/main/scala/mx/mac/FP32Common.scala:350:26, :363:21, :369:41
   wire          aGreater =
-    io_termMant == 18'h0 | (|{|(io_accIn[22:15]), io_accIn[14:0]})
+    io_termMant == 18'h0 | (|{|(io_accIn[21:14]), io_accIn[13:0]})
     & ($signed(_GEN) > $signed(etBiased) | _GEN == etBiased
-       & {|(io_accIn[22:15]), io_accIn[14:0], 5'h0} >= {io_termMant, 3'h0});	// src/main/scala/chisel3/util/Mux.scala:50:70, src/main/scala/mx/mac/FP32Common.scala:351:29, :355:26, :356:{21,29,42}, :359:30, :360:26, :368:21, :369:21, :373:27, :374:{28,41,52}, :375:{41,54,62}
-  wire [17:0]   _GEN_0 = aGreater ? io_termMant : accJust;	// src/main/scala/mx/mac/FP32Common.scala:367:31, :368:21, :369:21, :373:27, :379:21
-  wire          farSign = aGreater ? io_accIn[23] : io_termSign;	// src/main/scala/mx/mac/FP32Common.scala:354:26, :373:27, :380:21
-  wire          nearSign = aGreater ? io_termSign : io_accIn[23];	// src/main/scala/mx/mac/FP32Common.scala:354:26, :373:27, :381:21
-  wire [10:0]   _expDiffS_T = _GEN - etBiased;	// src/main/scala/mx/mac/FP32Common.scala:351:29, :374:41, :384:27
+       & {|(io_accIn[21:14]), io_accIn[13:0], 6'h0} >= {io_termMant, 3'h0});	// src/main/scala/mx/mac/FP32Common.scala:346:29, :350:26, :351:{21,29,42}, :354:30, :355:26, :363:21, :364:21, :368:27, :369:{28,41,52}, :370:{41,54,62}
+  wire [17:0]   _GEN_0 = aGreater ? io_termMant : accJust;	// src/main/scala/mx/mac/FP32Common.scala:362:31, :363:21, :364:21, :368:27, :374:21
+  wire          farSign = aGreater ? io_accIn[22] : io_termSign;	// src/main/scala/mx/mac/FP32Common.scala:349:26, :368:27, :375:21
+  wire          nearSign = aGreater ? io_termSign : io_accIn[22];	// src/main/scala/mx/mac/FP32Common.scala:349:26, :368:27, :376:21
+  wire [10:0]   _expDiffS_T = _GEN - etBiased;	// src/main/scala/mx/mac/FP32Common.scala:346:29, :369:41, :379:27
   wire [10:0]   absDiff =
-    $signed(_expDiffS_T) < 11'sh0 ? 11'h0 - _expDiffS_T : _expDiffS_T;	// src/main/scala/mx/mac/FP32Common.scala:384:27, :385:{21,31,39}
-  wire [10:0]   shAmt = absDiff > 11'h15 ? 11'h15 : absDiff;	// src/main/scala/mx/mac/FP32Common.scala:385:21, :386:{21,30}
-  wire [2047:0] _stickyAlign_T = 2048'h1 << shAmt;	// src/main/scala/mx/mac/FP32Common.scala:386:21, :388:38
-  wire [20:0]   _stickyAlign_T_1 = _stickyAlign_T[20:0] - 21'h1;	// src/main/scala/mx/mac/FP32Common.scala:388:{38,48}
-  wire          isSub = farSign ^ nearSign;	// src/main/scala/mx/mac/FP32Common.scala:380:21, :381:21, :396:28
-  wire [21:0]   _GEN_1 = {1'h0, aGreater ? accJust : io_termMant, 3'h0};	// src/main/scala/mx/mac/FP32Common.scala:367:31, :368:21, :369:21, :373:27, :378:21, :385:31, :397:26
-  wire [21:0]   _GEN_2 = {1'h0, {_GEN_0, 3'h0} >> shAmt};	// src/main/scala/mx/mac/FP32Common.scala:368:21, :369:21, :379:21, :385:31, :386:21, :387:29, :397:26
-  wire [21:0]   _subFwd_T_2 = _GEN_1 - _GEN_2;	// src/main/scala/mx/mac/FP32Common.scala:397:26, :398:41
+    $signed(_expDiffS_T) < 11'sh0 ? 11'h0 - _expDiffS_T : _expDiffS_T;	// src/main/scala/mx/mac/FP32Common.scala:379:27, :380:{21,31,39}
+  wire [10:0]   shAmt = absDiff > 11'h15 ? 11'h15 : absDiff;	// src/main/scala/mx/mac/FP32Common.scala:380:21, :381:{21,30}
+  wire [2047:0] _stickyAlign_T = 2048'h1 << shAmt;	// src/main/scala/mx/mac/FP32Common.scala:381:21, :383:38
+  wire [20:0]   _stickyAlign_T_1 = _stickyAlign_T[20:0] - 21'h1;	// src/main/scala/mx/mac/FP32Common.scala:383:{38,48}
+  wire          isSub = farSign ^ nearSign;	// src/main/scala/mx/mac/FP32Common.scala:375:21, :376:21, :391:28
+  wire [21:0]   _GEN_1 = {1'h0, aGreater ? accJust : io_termMant, 3'h0};	// src/main/scala/mx/mac/FP32Common.scala:362:31, :363:21, :364:21, :368:27, :373:21, :380:31, :392:26
+  wire [21:0]   _GEN_2 = {1'h0, {_GEN_0, 3'h0} >> shAmt};	// src/main/scala/mx/mac/FP32Common.scala:363:21, :364:21, :374:21, :380:31, :381:21, :382:29, :392:26
+  wire [21:0]   _subFwd_T_2 = _GEN_1 - _GEN_2;	// src/main/scala/mx/mac/FP32Common.scala:392:26, :393:41
   wire [21:0]   resMag =
-    isSub ? (_subFwd_T_2[21] ? ~_subFwd_T_2 + 22'h1 : _subFwd_T_2) : _GEN_1 + _GEN_2;	// src/main/scala/mx/mac/FP32Common.scala:396:28, :397:26, :398:41, :399:25, :400:{22,35,43}, :401:22
+    isSub ? (_subFwd_T_2[21] ? ~_subFwd_T_2 + 22'h1 : _subFwd_T_2) : _GEN_1 + _GEN_2;	// src/main/scala/mx/mac/FP32Common.scala:391:28, :392:26, :393:41, :394:25, :395:{22,35,43}, :396:22
   wire [4:0]    resLZC =
     resMag[21]
       ? 5'h0
@@ -231,23 +231,23 @@ module FusedScaleAcc_INT8_x_INT8_UE7M1_acc15b(	// src/main/scala/mx/mac/FP32Comm
                                                                               : resMag[2]
                                                                                   ? 5'h13
                                                                                   : {4'hA,
-                                                                                     ~(resMag[1])};	// src/main/scala/chisel3/util/Mux.scala:50:70, src/main/scala/mx/mac/FP32Common.scala:401:22, :406:42
-  wire [52:0]   _normShift_T = {31'h0, resMag} << resLZC;	// src/main/scala/chisel3/util/Mux.scala:50:70, src/main/scala/mx/mac/FP32Common.scala:401:22, :407:27
-  wire [15:0]   roundedM =
-    {1'h0, _normShift_T[20:6]}
-    + {15'h0,
-       _normShift_T[5]
-         & (_normShift_T[6] | _normShift_T[4] | (|(_normShift_T[3:0]))
-            | (|(_GEN_0 & _stickyAlign_T_1[20:3])))};	// src/main/scala/mx/mac/FP32Common.scala:368:21, :369:21, :379:21, :385:31, :388:{30,48,71}, :407:{27,37}, :410:28, :411:28, :412:28, :413:{28,50}, :415:{28,37,53}, :416:25, :425:35
+                                                                                     ~(resMag[1])};	// src/main/scala/chisel3/util/Mux.scala:50:70, src/main/scala/mx/mac/FP32Common.scala:396:22, :401:42
+  wire [52:0]   _normShift_T = {31'h0, resMag} << resLZC;	// src/main/scala/chisel3/util/Mux.scala:50:70, src/main/scala/mx/mac/FP32Common.scala:396:22, :402:27
+  wire [14:0]   roundedM =
+    {1'h0, _normShift_T[20:7]}
+    + {14'h0,
+       _normShift_T[6]
+         & (_normShift_T[7] | _normShift_T[5] | (|(_normShift_T[4:0]))
+            | (|(_GEN_0 & _stickyAlign_T_1[20:3])))};	// src/main/scala/mx/mac/FP32Common.scala:363:21, :364:21, :374:21, :380:31, :383:{30,48,71}, :402:{27,37}, :405:28, :406:28, :407:28, :408:{28,50}, :410:{28,37,53}, :411:25, :420:35
   wire [10:0]   _finalE_T_8 =
-    (aGreater ? _GEN : etBiased) + 11'h1 - {6'h0, resLZC} + {10'h0, roundedM[15]};	// src/main/scala/chisel3/util/Mux.scala:50:70, src/main/scala/mx/mac/FP32Common.scala:351:29, :373:27, :374:41, :377:21, :387:29, :416:25, :417:27, :420:{26,32,46}
+    (aGreater ? _GEN : etBiased) + 11'h1 - {6'h0, resLZC} + {10'h0, roundedM[14]};	// src/main/scala/chisel3/util/Mux.scala:50:70, src/main/scala/mx/mac/FP32Common.scala:346:29, :364:21, :368:27, :369:41, :372:21, :382:29, :411:25, :412:27, :415:{26,32,46}
   assign io_accOut =
     resMag == 22'h0 | $signed(_finalE_T_8) < 11'sh1
-      ? 24'h0
+      ? 23'h0
       : {isSub & _subFwd_T_2[21] ? nearSign : farSign,
          $signed(_finalE_T_8) > 11'shFE
-           ? 23'h7F8000
-           : {_finalE_T_8[7:0], roundedM[14:0]}};	// src/main/scala/mx/mac/FP32Common.scala:324:7, :380:21, :381:21, :396:28, :398:41, :399:25, :400:43, :401:22, :403:{22,29}, :416:25, :418:27, :420:{26,46}, :421:{26,34,44}, :422:27, :424:19, :425:{19,35}, :426:{35,58}
+           ? 22'h3FC000
+           : {_finalE_T_8[7:0], roundedM[13:0]}};	// src/main/scala/mx/mac/FP32Common.scala:319:7, :375:21, :376:21, :391:28, :393:41, :394:25, :395:43, :396:22, :398:{22,29}, :411:25, :413:27, :415:{26,46}, :416:{26,34,44}, :417:27, :419:19, :420:{19,35}, :421:{35,58}
 endmodule
 
 module BFP_PE(	// src/main/scala/mx/mac/FDPU.scala:66:7
@@ -260,10 +260,10 @@ module BFP_PE(	// src/main/scala/mx/mac/FDPU.scala:66:7
   input         io_validIn,	// src/main/scala/mx/mac/FDPU.scala:107:14
                 io_resetAcc,	// src/main/scala/mx/mac/FDPU.scala:107:14
   output        io_validOut,	// src/main/scala/mx/mac/FDPU.scala:107:14
-  output [23:0] io_accOut	// src/main/scala/mx/mac/FDPU.scala:107:14
+  output [22:0] io_accOut	// src/main/scala/mx/mac/FDPU.scala:107:14
 );
 
-  wire [23:0] _fusedAcc_io_accOut;	// src/main/scala/mx/mac/FDPU.scala:245:26
+  wire [22:0] _fusedAcc_io_accOut;	// src/main/scala/mx/mac/FDPU.scala:245:26
   wire        _sc_io_outSign;	// src/main/scala/mx/mac/FDPU.scala:236:20
   wire [9:0]  _sc_io_outExp;	// src/main/scala/mx/mac/FDPU.scala:236:20
   wire [17:0] _sc_io_outMant;	// src/main/scala/mx/mac/FDPU.scala:236:20
@@ -279,16 +279,16 @@ module BFP_PE(	// src/main/scala/mx/mac/FDPU.scala:66:7
   wire        _op_io_outSign;	// src/main/scala/mx/mac/FDPU.scala:142:20
   wire [13:0] _op_io_outMant;	// src/main/scala/mx/mac/FDPU.scala:142:20
   wire        _asyncRstN_T = ~reset;	// src/main/scala/mx/mac/FDPU.scala:193:20
-  reg  [23:0] accReg;	// src/main/scala/mx/mac/FDPU.scala:194:47
+  reg  [22:0] accReg;	// src/main/scala/mx/mac/FDPU.scala:194:47
   reg         validReg;	// src/main/scala/mx/mac/FDPU.scala:195:47
   always @(posedge clock or posedge _asyncRstN_T) begin	// src/main/scala/mx/mac/FDPU.scala:66:7, :193:20
     if (_asyncRstN_T) begin	// src/main/scala/mx/mac/FDPU.scala:66:7, :193:20
-      accReg <= 24'h0;	// src/main/scala/mx/mac/FDPU.scala:194:47
+      accReg <= 23'h0;	// src/main/scala/mx/mac/FDPU.scala:194:47
       validReg <= 1'h0;	// src/main/scala/mx/mac/FDPU.scala:66:7, :195:47
     end
     else begin	// src/main/scala/mx/mac/FDPU.scala:66:7
       if (io_resetAcc)	// src/main/scala/mx/mac/FDPU.scala:107:14
-        accReg <= 24'h0;	// src/main/scala/mx/mac/FDPU.scala:194:47
+        accReg <= 23'h0;	// src/main/scala/mx/mac/FDPU.scala:194:47
       else if (io_validIn)	// src/main/scala/mx/mac/FDPU.scala:107:14
         accReg <= _fusedAcc_io_accOut;	// src/main/scala/mx/mac/FDPU.scala:194:47, :245:26
       validReg <= ~io_resetAcc & io_validIn;	// src/main/scala/mx/mac/FDPU.scala:195:47, :268:21, :270:14, :271:26
@@ -305,11 +305,11 @@ module BFP_PE(	// src/main/scala/mx/mac/FDPU.scala:66:7
       `endif // INIT_RANDOM_PROLOG_
       `ifdef RANDOMIZE_REG_INIT	// src/main/scala/mx/mac/FDPU.scala:66:7
         _RANDOM[/*Zero width*/ 1'b0] = `RANDOM;	// src/main/scala/mx/mac/FDPU.scala:66:7
-        accReg = _RANDOM[/*Zero width*/ 1'b0][23:0];	// src/main/scala/mx/mac/FDPU.scala:66:7, :194:47
-        validReg = _RANDOM[/*Zero width*/ 1'b0][24];	// src/main/scala/mx/mac/FDPU.scala:66:7, :194:47, :195:47
+        accReg = _RANDOM[/*Zero width*/ 1'b0][22:0];	// src/main/scala/mx/mac/FDPU.scala:66:7, :194:47
+        validReg = _RANDOM[/*Zero width*/ 1'b0][23];	// src/main/scala/mx/mac/FDPU.scala:66:7, :194:47, :195:47
       `endif // RANDOMIZE_REG_INIT
       if (_asyncRstN_T) begin	// src/main/scala/mx/mac/FDPU.scala:66:7, :193:20
-        accReg = 24'h0;	// src/main/scala/mx/mac/FDPU.scala:194:47
+        accReg = 23'h0;	// src/main/scala/mx/mac/FDPU.scala:194:47
         validReg = 1'h0;	// src/main/scala/mx/mac/FDPU.scala:66:7, :195:47
       end
     end // initial
@@ -364,7 +364,7 @@ module BFP_PE(	// src/main/scala/mx/mac/FDPU.scala:66:7
     .io_outExp        (_sc_io_outExp),
     .io_outMant       (_sc_io_outMant)
   );
-  FusedScaleAcc_INT8_x_INT8_UE7M1_acc15b fusedAcc (	// src/main/scala/mx/mac/FDPU.scala:245:26
+  FusedScaleAcc_INT8_x_INT8_UE7M1_acc14b fusedAcc (	// src/main/scala/mx/mac/FDPU.scala:245:26
     .io_accIn    (accReg),	// src/main/scala/mx/mac/FDPU.scala:194:47
     .io_termSign (_sc_io_outSign),	// src/main/scala/mx/mac/FDPU.scala:236:20
     .io_termExp  (_sc_io_outExp),	// src/main/scala/mx/mac/FDPU.scala:236:20

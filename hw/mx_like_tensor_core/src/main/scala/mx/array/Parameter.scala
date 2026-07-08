@@ -1,6 +1,6 @@
 package mx.array
 
-import mx.mac.{ScaleAddConfig, MXFormats, ScaleFormats, TreeArch, AccPrecision}
+import mx.mac.{ScaleAddConfig, MXFormats, ScaleFormats, TreeArch}
 import mx.requant.{RequantConfig, RequantINT8Config}
 
 /** DSE override for the per-PE accumulator strategy.  When supplied to a
@@ -51,7 +51,8 @@ case class PEArrayConfig(
   /** Effective accumulator mantissa bits used by both FDPU and dstWidth. */
   val effAccMantBits: Int =
     if (accMantBitsOverride > 0) accMantBitsOverride
-    else AccPrecision.recommended(macCfg, K)
+    else throw new IllegalArgumentException(
+      "accMantBitsOverride must be provided (M_acc from macc_final_selection.csv); K-based AccPrecision was removed")
   /** PE accumulator output width: 1 sign + 8 exp + accMantBits (narrow,
    *  matches FDPUPostScaleReductionTree.io.accOut). The requant wrapper
    *  zero-extends this to requantCfg.inputWidth before feeding the
@@ -101,7 +102,8 @@ case class PEArrayINT8Config(
   val scaleWidth = macCfg.stype.totalScaleWidth
   val effAccMantBits: Int =
     if (accMantBitsOverride > 0) accMantBitsOverride
-    else AccPrecision.recommended(macCfg, K)
+    else throw new IllegalArgumentException(
+      "accMantBitsOverride must be provided (M_acc from macc_final_selection.csv); K-based AccPrecision was removed")
   val dstWidth   = 1 + 8 + effAccMantBits
   require(requantCfg.inputWidth >= dstWidth,
     s"requantCfg.inputWidth (${requantCfg.inputWidth}) must be >= PE dstWidth ($dstWidth)")
@@ -145,7 +147,8 @@ case class PEArrayFP32Config(
   val scaleWidth = macCfg.stype.totalScaleWidth
   val effAccMantBits: Int =
     if (accMantBitsOverride > 0) accMantBitsOverride
-    else AccPrecision.recommended(macCfg, K)
+    else throw new IllegalArgumentException(
+      "accMantBitsOverride must be provided (M_acc from macc_final_selection.csv); K-based AccPrecision was removed")
   /** Narrow FP word width: 1 sign + 8 exp + accMantBits. Downstream
    *  consumers must zero-extend to 32 bits if FP32 is required. */
   val dstWidth   = 1 + 8 + effAccMantBits
@@ -173,7 +176,8 @@ case class PEArrayBF16Config(
   val scaleWidth = macCfg.stype.totalScaleWidth
   val effAccMantBits: Int =
     if (accMantBitsOverride > 0) accMantBitsOverride
-    else AccPrecision.recommended(macCfg, K)
+    else throw new IllegalArgumentException(
+      "accMantBitsOverride must be provided (M_acc from macc_final_selection.csv); K-based AccPrecision was removed")
   val dstWidth   = 1 + 8 + effAccMantBits
   /** BF16 wrapper has no requantCfg.blockSize exposed — keep scale-apply
    *  per-cycle for simplicity (cyclesPerBlock=1 ⇒ FDPU uses buildSingleAcc). */

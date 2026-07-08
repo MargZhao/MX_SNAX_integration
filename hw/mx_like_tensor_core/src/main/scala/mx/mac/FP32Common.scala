@@ -308,12 +308,7 @@ class FPNAdder(val mantBits: Int) extends Module {
  *      termVal = (-1)^termSign × termMant × 2^(termExp − fracBits)
  *
  *  Its alignment exponent is taken directly from termMant's TOP bit
- *  (bit termMantW−1) — no separate leading-zero normalisation of the term.
- *  This is safe because termMant = (M_SA×M_SB)×treeMant carries three
- *  implicit-1s, so it is normalised to within ≤2 leading zeros; the single
- *  post-add LZD absorbs that slack.  Net vs. the old path: one fewer RNE
- *  (accuracy) and one fewer barrel-shift LZC (area) on the scaled-term path,
- *  giving 2 RNE end-to-end (tree-exit + this) instead of 3.
+ * 
  *
  *  @param scfg      scale/element config (for the fracBits + bias convention
  *                   — identical to the deleted ScaleToFPn).

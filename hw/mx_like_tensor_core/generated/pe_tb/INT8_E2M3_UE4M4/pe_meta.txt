@@ -3,8 +3,8 @@ weight E2M3
 scale UE4M4
 vec 4
 K 64
-m_acc 15
+m_acc 14
 op_a_w 32
 op_b_w 24
-acc_w 24
+acc_w 23
 scale_w 8

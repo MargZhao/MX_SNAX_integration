@@ -23,9 +23,14 @@ Repo: `https://github.com/MargZhao/MX_SNAX_integration.git`
 (`ScaleType(4,3)`), so `scale_w = 7`; the other five are 8-bit. Element widths per combo
 are in `pe_meta.txt` (`op_a_w = vec*wA`, `op_b_w = vec*wB`, `acc_w = 1+8+M_acc`).
 
-Per-combo functional correctness is already verified in
-`test/pe_correctness_table.csv` (all 126 within **< 0.81 %** of the float64 ideal;
-the tb prints `RESULT: PASS`).
+**M_acc source = `data/macc_final_selection.csv`** (the same table the deployed
+`EmitTensorCore` reads — the K-based heuristic was removed). So each PE's accumulator
+width matches deployment, and the VCDs are comparable to the previous per-PE power runs
+in `data/pe_vcd_merged_manifest.csv`.
+
+Per-combo functional correctness is verified in `test/pe_correctness_table.csv`
+(all 126 within **< 0.56 %** of the float64 ideal; each tb prints `RESULT: PASS`,
+cross-checked identically in Verilator and in the Scala chiseltest).
 
 ---
 
@@ -121,4 +126,5 @@ sbt "runMain mx.mac.PEEmitMain --act E4M3 --weight E2M1 --scale UE5M3 --outdir g
 python3 test/gen_pe_sv_testbench.py --json test/vectors/E4M3_E2M1_UE5M3_K64_bs16_vec4_seed0.json --pedir generated/pe_tb/E4M3_E2M1_UE5M3
 ```
 
-See `test/README.md` for the full generator/verification pipeline.
+Batch (all 126): `python3 test/gen_all_vectors.py` → `sbt "runMain mx.mac.AllPETbEmitMain 4 64"`
+→ `python3 test/gen_all_sv.py --run`.  M_acc is taken from `data/macc_final_selection.csv`.

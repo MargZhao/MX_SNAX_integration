@@ -46,7 +46,7 @@ class PEAccumTestbenchSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   // ── .tv parser ──────────────────────────────────────────────────────────
   case class Cyc(opA: BigInt, opB: BigInt, scaleA: BigInt, scaleB: BigInt)
-  case class TV(act: String, weight: String, scale: String,
+  case class TV(act: String, weight: String, scale: String, mAcc: Int,
                 wA: Int, wB: Int, vectorSize: Int, K: Int, golden: Double,
                 cycles: Seq[Cyc])
 
@@ -68,7 +68,7 @@ class PEAccumTestbenchSpec extends AnyFlatSpec with ChiselScalatestTester {
         }
       }
     } finally src.close()
-    TV(hdr("act"), hdr("weight"), hdr("scale"),
+    TV(hdr("act"), hdr("weight"), hdr("scale"), hdr("m_acc").toInt,
        hdr("wA").toInt, hdr("wB").toInt, hdr("vector_size").toInt,
        hdr("K").toInt, hdr("golden_dot").toDouble, cyc.toSeq)
   }
@@ -102,7 +102,7 @@ class PEAccumTestbenchSpec extends AnyFlatSpec with ChiselScalatestTester {
     s"BFP_PE[${tv.act}x${tv.weight}/${tv.scale}]" should
       s"accumulate ${tv.cycles.length} cycles within tol and time correctly (${f.getName})" in {
       val scfg = ScaleAddConfig(elemOf(tv.act), elemOf(tv.weight), scaleOf(tv.scale))
-      test(new FDPU(scfg, vectorSize = tv.vectorSize, K = tv.K)) { dut =>
+      test(new FDPU(scfg, vectorSize = tv.vectorSize, K = tv.K, accMantBits = tv.mAcc)) { dut =>
         val mAcc = dut.actualAccMantBits
         val wA   = elemOf(tv.act).totalWidth
         val wB   = elemOf(tv.weight).totalWidth
