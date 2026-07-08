@@ -27,7 +27,7 @@ from pathlib import Path
 # Default paths (relative to this script's location)
 # ---------------------------------------------------------------------------
 SCRIPT_DIR    = Path(__file__).parent.resolve()
-CHISEL_DIR    = (SCRIPT_DIR / "../../../../../hw/mx_like_tensor_core").resolve()
+CHISEL_DIR    = (SCRIPT_DIR / "../../../../../hw/chisel_acc").resolve()
 DEFAULT_SWCFG  = SCRIPT_DIR / "data" / "params.hjson"
 DEFAULT_HWCFG  = SCRIPT_DIR / "../../../cfg/snax_mx_cluster_template.hjson"
 DEFAULT_GEN_HW = SCRIPT_DIR / "../../../cfg/snax_mx_cluster.hjson"
@@ -50,8 +50,8 @@ _DTYPE_BITS = {
 _ELEMENT_TYPE_MAP = {0: "INT8", 1: "E5M2", 2: "E4M3", 3: "E3M2", 4: "E2M3", 5: "E2M1"}
 _SCALE_FORMAT_MAP = {0: "UE8M0", 1: "UE7M1", 2: "UE6M2", 3: "UE5M3", 4: "UE4M4", 5: "UE3M5", 6: "UE2M6"}
 # quantize_mode → requant output type string (used for Chisel gen directory naming)
-# 0: fp32 (no requant), 1: bf16, 2: fp8_e5m2, 3: fp8_e4m3, 4: mxint8, 5: fp6_e2m3, 6: fp6_e3m2, 7: fp4_e2m1
-_REQUNAT_TYPE_MAP = {0: "fp32", 1: "bf16", 2: "fp8_e5m2", 3: "fp8_e4m3", 4: "mxint8", 5: "fp6_e2m3", 6: "fp6_e3m2", 7: "fp4_e2m1"}
+# 0: fp32 (no requant), 1: bf16, 2: fp8_e5m2, 3: fp8_e4m3, 4: mxint8, 5: fp6_e2m3, 6: fp6_e3m2
+_REQUNAT_TYPE_MAP = {0: "fp32", 1: "bf16", 2: "fp8_e5m2", 3: "fp8_e4m3", 4: "mxint8", 5: "fp6_e2m3", 6: "fp6_e3m2"}
 
 # Mapping from params.hjson dtype strings to _ELEMENT_TYPE_MAP integer codes
 _DTYPE_TO_ELEMENT_TYPE = {
@@ -71,12 +71,11 @@ _REQUANT_OUT_TAG = {
     4: ("INT8",  8),
     5: ("E2M3",  6),
     6: ("E3M2",  6),
-    7: ("E2M1",  4),
 }
 
 
 def _o_bitwidth(quantize_mode: int) -> int:
-    return {0: 32, 1: 16, 2: 8, 3: 8, 4: 8, 5: 6, 6: 6, 7: 4}.get(quantize_mode, 32)
+    return {0: 32, 1: 16, 2: 8, 3: 8, 4: 8, 5: 6, 6: 6}.get(quantize_mode, 32)
 
 
 def compute_hw_cfg(p: dict) -> dict:
@@ -136,7 +135,7 @@ def compute_hw_cfg(p: dict) -> dict:
     writer_temporal_dim = [writer_tdim]
 
     #for requantizaiton
-    if quantize_mode in [2, 3, 4, 5, 6, 7]:
+    if quantize_mode in [2, 3, 4, 5, 6]:
         O_shared_tile = math.ceil((parfor_M) / 8) * 8
         ch_share_out = O_shared_tile // 8
         total_channels += ch_share_out
@@ -579,26 +578,17 @@ def run_pe_array_gen(p: dict, out_dir: Path) -> Path:
                  f"valid: {_SCALE_FORMAT_MAP}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    # New flow: hw/mx_like_tensor_core `mx.EmitTensorCore`.
-    #   --type-a/--type-b     → --act/--weight
-    #   --out-dir             → --outdir
-    #   --requant-mode        → --quantize-mode (0..7; dispatches on OUTPUT type)
-    #   --no-standalone-requant: skip requant_standalone/ (integrated PE_Array.sv
-    #                            already contains the requant block).
-    # M_acc is resolved by EmitTensorCore from data/macc_final_selection.csv
-    # (relative to CHISEL_DIR) keyed by (act, weight, scale); FP32 forces M_acc=23.
     sbt_cmd = (
-        f"runMain mx.EmitTensorCore"
-        f" --act    {type_a}"
-        f" --weight {type_b}"
+        f"runMain mx.GeneratePEArray"
+        f" --type-a {type_a}"
+        f" --type-b {type_b}"
         f" --scale  {scale}"
         f" --vec    {p['parfor_K']}"
         f" --tile-rows  {p['parfor_M']}"
         f" --tile-cols  {p['parfor_N']}"
         f" --block-size {p.get('block_size', 32)}"
-        f" --quantize-mode {requant_mode}"
-        f" --outdir {out_dir}"
-        f" --no-standalone-requant"
+        f" --requant-mode {requant_mode}"
+        f" --out-dir {out_dir}"
     )
 
     print(f"[orchestrator] PE-Array RTL: {type_a}×{type_b} scale={scale} "

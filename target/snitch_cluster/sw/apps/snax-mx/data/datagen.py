@@ -37,8 +37,8 @@ _DTYPE_TO_HW_ETYPE = {
     'mxint8':   'INT8',
 }
 
-# Maps quantize_mode → output element dtype for BFP requantization (modes 2-5)
-_O_DTYPE_MAP = {2: 'fp8_e5m2', 3: 'fp8_e4m3', 4: 'mxint8', 5: 'fp6_e2m3', 6: 'fp6_e3m2'}
+# Maps quantize_mode → output element dtype for BFP requantization (modes 2-7)
+_O_DTYPE_MAP = {2: 'fp8_e5m2', 3: 'fp8_e4m3', 4: 'mxint8', 5: 'fp6_e2m3', 6: 'fp6_e3m2', 7: 'fp4_e2m1'}
 
 ###################################################################
 ###############    auxiliray functions   ##########################
@@ -54,6 +54,50 @@ def gen_channel_enable_CSR(channel_en_CSR, channel_en_bits):
     channel_en_CSR = [int(x) for x in channel_en_CSR][::-1]
     return channel_en_CSR
 
+
+
+def gen_workload(M, K, N, mode="fitted", *, seed=0,
+                 weight_std=0.03, act_std=0.03,
+                 outlier_frac=0.05, outlier_gain=(8.0, 32.0),
+                 variance=1.0, npy_a=None, npy_b=None):
+    """Return (A_fp32 [M,K], B_fp32 [K,N]) operands for the tensor core.
+
+    modes (params `workload`):
+      "fitted"   – transformer-like statistics for POWER runs (default):
+                   B = clean zero-mean Gaussian weights (weight_std);
+                   A = Gaussian activations (act_std) with a fraction
+                   (outlier_frac) of heavy-tailed outlier CHANNELS scaled by
+                   outlier_gain. The outliers spread the per-block shared
+                   exponents, which is what drives ScaleAddition / reduction-tree
+                   toggling — i.e. realistic MXFP switching activity.
+      "gaussian" – plain N(0, variance) for both A and B (no outliers).
+      "npy"      – load real tensors from npy_a / npy_b (must match shapes).
+      "debug"    – A = 1..M*K sequential, B = identity. Functional self-check
+                   only; PATHOLOGICAL for power (B is ~all zeros → no toggling).
+    """
+    rng = np.random.default_rng(seed)
+    if mode == "npy":
+        A = np.load(npy_a).astype(np.float32)
+        B = np.load(npy_b).astype(np.float32)
+        assert A.shape == (M, K) and B.shape == (K, N), \
+            f"npy shapes {A.shape},{B.shape} != ({M},{K}),({K},{N})"
+        return A, B
+    if mode == "debug":
+        A = np.arange(1, M * K + 1).reshape(M, K).astype(np.float32)
+        B = np.eye(K, N, dtype=np.float32)
+        return A, B
+    if mode == "gaussian":
+        A = (rng.standard_normal((M, K)) * variance).astype(np.float32)
+        B = (rng.standard_normal((K, N)) * variance).astype(np.float32)
+        return A, B
+    # "fitted" (default): transformer-like
+    B = (rng.standard_normal((K, N)) * weight_std).astype(np.float32)
+    A = (rng.standard_normal((M, K)) * act_std).astype(np.float32)
+    n_out = max(1, int(round(outlier_frac * K)))
+    cols  = rng.choice(K, size=n_out, replace=False)
+    gains = rng.uniform(outlier_gain[0], outlier_gain[1], size=n_out).astype(np.float32)
+    A[:, cols] *= gains
+    return A, B
 
 
 def data_file_emit(**kwargs):
@@ -83,16 +127,21 @@ def data_file_emit(**kwargs):
     #######################################################
     ###################data generation#####################
     #######################################################
-    # TODO: make a switch to whether use random gen data or real workload
-    variance = 1
-    A_fp32 = (np.random.randn(M, K) * variance ).astype(np.float32)
-    B_fp32 = (np.random.randn(K, N) * variance ).astype(np.float32)
-    # A_fp32 = np.eye(K, N, dtype=np.float32)
-    #B_fp32 = np.random.uniform(low=-1.0, high=0.0, size=(M, K)).astype(np.float32)
-    # A_fp32 = np.tile(np.arange(1, K+1), (M, 1)).astype(np.float32)
-    # # B_fp32 = np.tile(np.arange(1, N+1), (K, 1)).astype(np.float32)
-    A_fp32 = np.arange(1, M*K+1).reshape(M, K).astype(np.float32)
-    B_fp32 = np.eye(K, N, dtype=np.float32)
+    # Operand data. Default "fitted": transformer-like statistics (clean Gaussian
+    # weights + heavy-tailed outlier activation channels) for realistic MXFP
+    # switching activity in power runs. Switch via params `workload`
+    # (fitted | gaussian | npy | debug); "debug" = old arange/eye self-check.
+    A_fp32, B_fp32 = gen_workload(
+        M, K, N,
+        mode         = kwargs.get("workload", "fitted"),
+        seed         = int(kwargs.get("seed", 0)),
+        weight_std   = float(kwargs.get("weight_std", 0.03)),
+        act_std      = float(kwargs.get("act_std", 0.03)),
+        outlier_frac = float(kwargs.get("outlier_frac", 0.05)),
+        variance     = float(kwargs.get("variance", 1.0)),
+        npy_a        = kwargs.get("npy_a"),
+        npy_b        = kwargs.get("npy_b"),
+    )
     
     m_padded = ceil(M / parfor_M) * parfor_M
     # For MX quantize modes the N dimension is tiled by block_size, so pad to block_size boundary
@@ -149,8 +198,10 @@ def data_file_emit(**kwargs):
         o_bitwidth = 16
     elif quantize_mode in (2, 3, 4):   # fp8_e5m2, fp8_e4m3, mxint8: all 8-bit
         o_bitwidth = 8
-    else:                               # modes 5, 6: fp6
+    elif quantize_mode in (5, 6):       # fp6_e2m3, fp6_e3m2
         o_bitwidth = 6
+    else:                               # mode 7: fp4_e2m1
+        o_bitwidth = 4
     
     stationary = kwargs["stationary"]
     data_str += [format_scalar_definition("uint32_t", "stationary", stationary)]

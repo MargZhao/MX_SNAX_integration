@@ -1,0 +1,40 @@
+// Top-level sweep config consumed by sweep.py.
+//
+// Layout:
+//   base        — fields inherited by every variant.
+//   sweep_dims  — each key is a sweep axis; the Cartesian product across all
+//                 axes defines the set of variants.
+//   skip        — list of partial matches; any variant whose params include
+//                 ALL fields of a skip-entry is dropped from the run.
+//
+// Variant name is auto-derived from key params:
+//   <A_dtype>-<B_dtype>-<parfor_M>x<parfor_N>x<parfor_K>-blk<block_size>
+//       -q<quantize_mode>-s<shared_format>
+// e.g. fp6_e2m3-mxint8-4x16x4-blk16-q4-s4
+{
+    base: {
+        K: 16
+        N: 16
+        M: 16
+        stationary: 0
+        use_hw_gemm: 0
+    }
+
+    sweep_dims: {
+        A_dtype:       ["fp6_e2m3", "mxint8"]
+        B_dtype:       ["mxint8"]
+        parfor_M:      [4]
+        parfor_N:      [16]
+        parfor_K:      [4]
+        block_size:    [16]
+        //0:fp32, 1:bf16, 2: e5m2, 3: e4m3, 4:mxint8, 5: e3m2, 5: e2m3
+        quantize_mode: [3, 4]
+        shared_format: [4]
+    }
+
+    // Drop variants where ALL of the listed fields match. Example: skip every
+    // mxint8 input combined with FP8_E4M3 output.
+    skip: [
+        // { A_dtype: "mxint8", quantize_mode: 3 }
+    ]
+}
