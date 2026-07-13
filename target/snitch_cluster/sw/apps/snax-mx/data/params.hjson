@@ -11,6 +11,7 @@
     quantize_mode: 2
     shared_format: 4
     stationary: 0
-    workload: "gaussian"
-    use_hw_gemm: 1
+    workload: "debug"
+    use_hw_gemm: 0   // 0 = ideal dequant matmul golden (tolerance); SimpleDPU(BF16) approx it
+    dpu: "simple"   // "fused" (FDPU narrow-FP M_acc) | "simple" (SimpleDPU BF16)
 }

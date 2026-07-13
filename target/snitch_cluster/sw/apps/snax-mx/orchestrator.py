@@ -222,190 +222,6 @@ def patch_hwcfg(src: Path, dst: Path, hw: dict) -> None:
 # Chisel RTL generation
 # ---------------------------------------------------------------------------
 
-# def run_chisel_gen(p: dict) -> Path:
-#     """
-#     Derive FusedDotProductUnit parameters from params and invoke sbt to
-#     generate SystemVerilog.
-
-#     Mapping from params.hjson:
-#       data_type     (int, default 0) → type_a and type_b element format
-#       shared_format (int, default 0) → scale format
-#       parfor_K                       → vectorSize (parallel MACs per cycle)
-#     """
-#     A_dtype       = p.get("A_dtype",       "mxint8")
-#     B_dtype       = p.get("B_dtype",       "mxint8")
-#     shared_format = p.get("shared_format", "UE8M0")
-#     vec           = p["parfor_K"]
-
-#     type_a = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(A_dtype))
-#     type_b = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(B_dtype))
-#     scale  = _SCALE_FORMAT_MAP.get(shared_format)
-
-#     if type_a is None:
-#         sys.exit(f"[orchestrator] unknown A_dtype={A_dtype!r}, "
-#                  f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
-#     if type_b is None:
-#         sys.exit(f"[orchestrator] unknown B_dtype={B_dtype!r}, "
-#                  f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
-#     if scale is None:
-#         sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
-#                  f"valid: {_SCALE_FORMAT_MAP}")
-
-#     #out_dir = CHISEL_DIR / "generated" / "fused_dot" / f"{type_a}_{type_b}_{scale}_vec{vec}"
-#     out_dir = DEFAULT_GEN_PE
-#     sbt_cmd = (
-#         f"runMain mx.GenerateFusedDotProduct"
-#         f" --type-a {type_a}"
-#         f" --type-b {type_b}"
-#         f" --scale  {scale}"
-#         f" --vec    {vec}"
-#         f" --out-dir {out_dir}"
-#     )
-
-#     print(f"[orchestrator] Chisel RTL: {type_a} x {type_b}, scale={scale}, vec={vec}")
-#     print(f"[orchestrator] sbt {sbt_cmd}")
-#     result = subprocess.run(["sbt", sbt_cmd], cwd=CHISEL_DIR)
-#     if result.returncode != 0:
-#         sys.exit(f"[orchestrator] Chisel generation failed (exit {result.returncode})")
-
-#     sv_path = out_dir / "BFP_PE.sv"
-#     print(f"[orchestrator] RTL written → {sv_path}")
-#     return out_dir
-
-# def run_mac_gen(p: dict) -> Path:
-#     """
-#     Derive FusedDotProductUnit parameters from params and invoke sbt to
-#     generate SystemVerilog.
-
-#     Mapping from params.hjson:
-#       data_type     (int, default 0) → type_a and type_b element format
-#       shared_format (int, default 0) → scale format
-#       parfor_K                       → vectorSize (parallel MACs per cycle)
-#     """
-#     A_dtype       = p.get("A_dtype",       "mxint8")
-#     B_dtype       = p.get("B_dtype",       "mxint8")
-#     shared_format = p.get("shared_format", "UE8M0")
-#     vec           = p["parfor_K"]
-
-#     type_a = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(A_dtype))
-#     type_b = _ELEMENT_TYPE_MAP.get(_DTYPE_TO_ELEMENT_TYPE.get(B_dtype))
-#     scale  = _SCALE_FORMAT_MAP.get(shared_format)
-
-#     if type_a is None:
-#         sys.exit(f"[orchestrator] unknown A_dtype={A_dtype!r}, "
-#                  f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
-#     if type_b is None:
-#         sys.exit(f"[orchestrator] unknown B_dtype={B_dtype!r}, "
-#                  f"valid: {list(_DTYPE_TO_ELEMENT_TYPE)}")
-#     if scale is None:
-#         sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
-#                  f"valid: {_SCALE_FORMAT_MAP}")
-
-#     #out_dir = CHISEL_DIR / "generated" / "fused_dot" / f"{type_a}_{type_b}_{scale}_vec{vec}"
-#     out_dir = DEFAULT_GEN_PE
-#     sbt_cmd = (
-#         f"runMain mx.GenerateFusedDotProduct"
-#         f" --type-a {type_a}"
-#         f" --type-b {type_b}"
-#         f" --scale  {scale}"
-#         f" --vec    {vec}"
-#         f" --out-dir {out_dir}"
-#     )
-
-#     print(f"[orchestrator] Chisel RTL: {type_a} x {type_b}, scale={scale}, vec={vec}")
-#     print(f"[orchestrator] sbt {sbt_cmd}")
-#     result = subprocess.run(["sbt", sbt_cmd], cwd=CHISEL_DIR)
-#     if result.returncode != 0:
-#         sys.exit(f"[orchestrator] Chisel generation failed (exit {result.returncode})")
-
-#     sv_path = out_dir / "BFP_PE.sv"
-#     print(f"[orchestrator] RTL written → {sv_path}")
-#     return out_dir
-
-# def run_requant_gen(p: dict) -> Path:
-#     """
-#     Derive Requant parameters from params and invoke sbt to generate SystemVerilog.
-
-#     Mapping from params.hjson:
-#       quantize_mode  (int 1-6) → output element format:
-#                                   1=bf16, 2=fp8_e5m2, 3=fp8_e4m3,
-#                                   4=mxint8, 5=fp6_e2m3, 6=fp6_e3m2
-#       shared_format  (int 0-6) → block scale format via _SCALE_FORMAT_MAP
-#                                   (not used for mode 1 bf16)
-#       parfor_M                 → tileRows
-#       parfor_N                 → tileCols
-#       block_size  (default 32) → MX block size (16, 32, or 64)
-#     """
-#     requant_mode  = p.get("quantize_mode")
-#     shared_format = p.get("shared_format", 0)
-#     tile_rows     = p["parfor_M"]
-#     tile_cols     = p["parfor_N"]
-#     block_size    = p.get("block_size", 32)
-
-#     if requant_mode not in _REQUNAT_TYPE_MAP:
-#         sys.exit(f"[orchestrator] quantize_mode={requant_mode} is not a requant mode. "
-#                  f"Valid: {list(_REQUNAT_TYPE_MAP)}")
-
-#     dtype_str = _REQUNAT_TYPE_MAP[requant_mode]   # e.g. "fp8_e5m2", "bf16"
-#     out_dir = DEFAULT_GEN_PE
-
-#     # ── Mode 1: BF16 — no MX scale, no block-size ────────────────────────
-#     if requant_mode == 1:
-#         # out_dir = SCRIPT_DIR / "generated" / "requant" / \
-#         #           f"BF16_{tile_rows}x{tile_cols}"
-#         sbt_cmd = (
-#             f"runMain mx.GenerateRequantBF16"
-#             f" --tile-rows {tile_rows}"
-#             f" --tile-cols {tile_cols}"
-#             f" --out-dir   {out_dir}"
-#         )
-#         label = f"BF16 {tile_rows}x{tile_cols}"
-
-#     # ── Mode 4: mxint8 → GenerateRequantINT8 ─────────────────────────────
-#     elif requant_mode == 4:
-#         scale = _SCALE_FORMAT_MAP.get(shared_format)
-#         if scale is None:
-#             sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
-#                      f"valid: {_SCALE_FORMAT_MAP}")
-#         # out_dir = CHISEL_DIR / "generated" / "requant" / \
-#         #           f"INT8_{scale}_blk{block_size}_{tile_rows}x{tile_cols}"
-#         sbt_cmd = (
-#             f"runMain mx.GenerateRequantINT8"
-#             f" --block-size {block_size}"
-#             f" --tile-rows  {tile_rows}"
-#             f" --tile-cols  {tile_cols}"
-#             f" --out-dir    {out_dir}"
-#         )
-#         label = f"INT8 scale={scale} blk={block_size} {tile_rows}x{tile_cols}"
-
-#     # ── Modes 2/3/5/6: FP8 or FP6 → GenerateRequantFP8or6 ───────────────
-#     else:
-#         scale = _SCALE_FORMAT_MAP.get(shared_format)
-#         if scale is None:
-#             sys.exit(f"[orchestrator] unknown shared_format={shared_format}, "
-#                      f"valid: {_SCALE_FORMAT_MAP}")
-#         out_type = _ELEMENT_TYPE_MAP[_DTYPE_TO_ELEMENT_TYPE[dtype_str]]  # e.g. "E5M2"
-#         # out_dir = SCRIPT_DIR / "generated" / "requant" / \
-#         #           f"{out_type}_{scale}_blk{block_size}_{tile_rows}x{tile_cols}"
-#         sbt_cmd = (
-#             f"runMain mx.GenerateRequantFP8or6"
-#             f" --out-type   {out_type}"
-#             f" --scale      {scale}"
-#             f" --block-size {block_size}"
-#             f" --tile-rows  {tile_rows}"
-#             f" --tile-cols  {tile_cols}"
-#             f" --out-dir    {out_dir}"
-#         )
-#         label = f"{dtype_str} outType={out_type} scale={scale} blk={block_size} {tile_rows}x{tile_cols}"
-
-#     print(f"[orchestrator] Requant RTL ({dtype_str}): {label}")
-#     print(f"[orchestrator] sbt {sbt_cmd}")
-#     result = subprocess.run(["sbt", sbt_cmd], cwd=CHISEL_DIR)
-#     if result.returncode != 0:
-#         sys.exit(f"[orchestrator] Requant RTL generation failed (exit {result.returncode})")
-
-#     print(f"[orchestrator] Requant RTL written → {out_dir}")
-#     return out_dir
 
 def emit_pe_array_wrapper_sv(p: dict, out_dir: Path) -> Path:
     """Emit a thin SV adaptor module (PE_Array_wrapper) that exposes packed
@@ -587,6 +403,11 @@ def run_pe_array_gen(p: dict, out_dir: Path) -> Path:
     #                            already contains the requant block).
     # M_acc is resolved by EmitTensorCore from data/macc_final_selection.csv
     # (relative to CHISEL_DIR) keyed by (act, weight, scale); FP32 forces M_acc=23.
+    # DPU flavour: "fused" (FDPU, narrow-FP M_acc from CSV) or "simple"
+    # (SimpleDPU, BF16 accumulator). Both emit a drop-in module "PE_Array" with
+    # identical external ports for the FP8/FP6/INT8/BF16 output modes, so the
+    # wrapper/shell/hjson downstream are unaffected.
+    dpu = p.get("dpu", "fused")
     sbt_cmd = (
         f"runMain mx.EmitTensorCore"
         f" --act    {type_a}"
@@ -597,6 +418,7 @@ def run_pe_array_gen(p: dict, out_dir: Path) -> Path:
         f" --tile-cols  {p['parfor_N']}"
         f" --block-size {p.get('block_size', 32)}"
         f" --quantize-mode {requant_mode}"
+        f" --dpu {dpu}"
         f" --outdir {out_dir}"
         f" --no-standalone-requant"
     )
@@ -650,6 +472,9 @@ def main() -> None:
                     help="path for auto-generated snax_mx_defines.mk "
                          "(default: <genhw>.parent/snax_mx_defines.mk)")
     ap.add_argument("--skip-rtl", action="store_true",    help="skip Chisel RTL generation step")
+    ap.add_argument("--dpu", default=None, choices=["fused", "simple"],
+                    help="DPU flavour (overrides params.dpu; default fused). "
+                         "fused=FDPU narrow-FP M_acc; simple=SimpleDPU BF16.")
     args = ap.parse_args()
 
     swcfg     = Path(args.swcfg).resolve()
@@ -664,6 +489,9 @@ def main() -> None:
     print(f"[orchestrator] loading params  ← {swcfg}")
     with open(swcfg, encoding="utf-8") as f:
         params = hjson.load(f)
+    if args.dpu:                      # CLI overrides params.dpu
+        params["dpu"] = args.dpu
+    print(f"[orchestrator] DPU flavour = {params.get('dpu', 'fused')}")
 
     # 2. Compute HW config
     hw = compute_hw_cfg(params)

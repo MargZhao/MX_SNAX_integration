@@ -5,7 +5,8 @@ import mx.mac.{MXFormats, ScaleFormats, ScaleAddConfig, TreeArch, ElementType, S
 import mx.array.{
   ArchOverride,
   PEArrayConfig, PEArrayINT8Config, PEArrayFP32Config, PEArrayBF16Config,
-  PEArrayWrapper, PEArrayWrapperINT8, PEArrayWrapperFP32, PEArrayWrapperBF16
+  PEArrayWrapper, PEArrayWrapperINT8, PEArrayWrapperFP32, PEArrayWrapperBF16,
+  SimpleArrayConfig, SimplePEArray, SimpleOut
 }
 import mx.requant.{RequantConfig, RequantFP8, RequantINT8, RequantINT8Config}
 import java.io.File
@@ -74,6 +75,7 @@ object EmitTensorCore extends App {
     emitIntegrated:     Boolean = true,
     emitStandaloneRq:   Boolean = true,
     csvPath:            String  = "data/macc_final_selection.csv",
+    dpu:                String  = "fused",       // "fused" = FDPU (narrow-FP M_acc); "simple" = SimpleDPU (BF16)
   )
 
   // quantize_mode → out-type (matches orchestrator gen_pe_array_rtl.py _REQUANT_LABEL)
@@ -127,6 +129,7 @@ object EmitTensorCore extends App {
       case "--block-size":: v :: t => parse(t, acc.copy(blockSize = v.toInt))
       case "--outdir" :: v :: t => parse(t, acc.copy(outdir = Some(v)))
       case "--csv"    :: v :: t => parse(t, acc.copy(csvPath = v))
+      case "--dpu"    :: v :: t => parse(t, acc.copy(dpu = v))
       case "--no-integrated"        :: t => parse(t, acc.copy(emitIntegrated   = false))
       case "--no-standalone-requant":: t => parse(t, acc.copy(emitStandaloneRq = false))
       case "--help" :: _ | "-h" :: _ => usage()
@@ -259,6 +262,25 @@ object EmitTensorCore extends App {
   println(s"  label:    ${label}")
   println(s"  outdir:   ${outdir}")
   println(s"  PE narrow-FP output width (before requant): 1 + 8 + M_acc = FP${inW}")
+
+  // ── SimpleDPU path (--dpu simple): BF16 accumulator, M_acc irrelevant. ──
+  // Drop-in "PE_Array" with the same external ports; only the internals differ.
+  if (opts.dpu == "simple") {
+    println(s"  DPU:      SimpleDPU (BF16 accumulator; M_acc ignored)")
+    val simpleOut: SimpleOut = outTypeStr match {
+      case "FP32" => SimpleOut.FP32
+      case "BF16" => SimpleOut.BF16
+      case "INT8" => SimpleOut.INT8
+      case fp if Seq("E5M2", "E4M3", "E3M2", "E2M3", "E2M1").contains(fp) => SimpleOut.FP8(FMT(fp))
+      case other  => System.err.println(s"Unknown output type for SimpleDPU: $other"); sys.exit(1)
+    }
+    val sCfg = SimpleArrayConfig(macCfg, opts.vec, opts.tileRows, opts.tileCols, simpleOut, opts.blockSize)
+    if (opts.emitIntegrated)
+      emitVerilog(new SimplePEArray(sCfg), Array("--target-dir", outdir))
+    if (opts.emitStandaloneRq)
+      println("  [note] --emit-standalone-requant ignored for SimpleDPU (requant bundled into PE_Array)")
+    sys.exit(0)
+  }
 
   // ── Dispatch on OUTPUT TYPE (not input) — orchestrator quantize_mode semantics.
   outTypeStr match {
