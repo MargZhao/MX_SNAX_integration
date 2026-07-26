@@ -403,11 +403,8 @@ def run_pe_array_gen(p: dict, out_dir: Path) -> Path:
     #                            already contains the requant block).
     # M_acc is resolved by EmitTensorCore from data/macc_final_selection.csv
     # (relative to CHISEL_DIR) keyed by (act, weight, scale); FP32 forces M_acc=23.
-    # DPU flavour: "fused" (FDPU, narrow-FP M_acc from CSV) or "simple"
-    # (SimpleDPU, BF16 accumulator). Both emit a drop-in module "PE_Array" with
-    # identical external ports for the FP8/FP6/INT8/BF16 output modes, so the
-    # wrapper/shell/hjson downstream are unaffected.
-    dpu = p.get("dpu", "fused")
+    # EmitTensorCore now emits the TemplateDPU "PE_Array" only (drop-in module,
+    # requant bundled in); the wrapper/shell/hjson downstream are unaffected.
     sbt_cmd = (
         f"runMain mx.EmitTensorCore"
         f" --act    {type_a}"
@@ -418,7 +415,6 @@ def run_pe_array_gen(p: dict, out_dir: Path) -> Path:
         f" --tile-cols  {p['parfor_N']}"
         f" --block-size {p.get('block_size', 32)}"
         f" --quantize-mode {requant_mode}"
-        f" --dpu {dpu}"
         f" --outdir {out_dir}"
         f" --no-standalone-requant"
     )
@@ -472,9 +468,6 @@ def main() -> None:
                     help="path for auto-generated snax_mx_defines.mk "
                          "(default: <genhw>.parent/snax_mx_defines.mk)")
     ap.add_argument("--skip-rtl", action="store_true",    help="skip Chisel RTL generation step")
-    ap.add_argument("--dpu", default=None, choices=["fused", "simple"],
-                    help="DPU flavour (overrides params.dpu; default fused). "
-                         "fused=FDPU narrow-FP M_acc; simple=SimpleDPU BF16.")
     args = ap.parse_args()
 
     swcfg     = Path(args.swcfg).resolve()
@@ -489,9 +482,6 @@ def main() -> None:
     print(f"[orchestrator] loading params  ← {swcfg}")
     with open(swcfg, encoding="utf-8") as f:
         params = hjson.load(f)
-    if args.dpu:                      # CLI overrides params.dpu
-        params["dpu"] = args.dpu
-    print(f"[orchestrator] DPU flavour = {params.get('dpu', 'fused')}")
 
     # 2. Compute HW config
     hw = compute_hw_cfg(params)
