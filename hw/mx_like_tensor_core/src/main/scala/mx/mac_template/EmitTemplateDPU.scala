@@ -1,12 +1,12 @@
-// Emit main: elaborate SimpleDPU for a specified config and print widths.
+// Emit main: elaborate TemplateDPU for a specified config and print widths.
 //
 // Usage (single config):
-//   sbt "runMain mx_simple.EmitSimpleDPU E4M3 E4M3 UE6M2 generated/E4M3_E4M3_UE6M2"
+//   sbt "runMain mx_template.EmitTemplateDPU E4M3 E4M3 UE6M2 generated/E4M3_E4M3_UE6M2"
 //
 // Usage (all 126 configs):
-//   sbt "runMain mx_simple.EmitAllSimpleDPU generated"
+//   sbt "runMain mx_template.EmitAllTemplateDPU generated"
 
-package mx_simple
+package mx_template
 
 import chisel3._
 import circt.stage.ChiselStage
@@ -43,16 +43,16 @@ object MetaDump {
     pw.println(s"expSignedW=${ww.expSignedW}")
     pw.println(s"BF16_expBits=${BF16.expBits}")
     pw.println(s"BF16_mantBits=${BF16.mantBits}")
-    pw.println(s"topModule=SimpleDPU_${cfg.A.name}_${cfg.W.name}_${cfg.S.name}")
+    pw.println(s"topModule=TemplateDPU_${cfg.A.name}_${cfg.W.name}_${cfg.S.name}")
     pw.close()
   }
 }
 
-object EmitSimpleDPU extends App {
+object EmitTemplateDPU extends App {
   val (elA, elW, sc, outDir) = args match {
     case Array(a, b, s, o) => (a, b, s, o)
     case _ =>
-      println("Usage: EmitSimpleDPU <elA> <elW> <scale> <outDir>")
+      println("Usage: EmitTemplateDPU <elA> <elW> <scale> <outDir>")
       sys.exit(1)
   }
   val cfg = DPUConfig(
@@ -65,7 +65,7 @@ object EmitSimpleDPU extends App {
   println()
 
   ChiselStage.emitSystemVerilogFile(
-    new SimpleDPU(cfg),
+    new TemplateDPU(cfg),
     Array("--target-dir", outDir),
     firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info"),
   )
@@ -73,7 +73,7 @@ object EmitSimpleDPU extends App {
 }
 
 /** Emit all 126 configs (upper triangle of 6 elem types x 6 scales). */
-object EmitAllSimpleDPU extends App {
+object EmitAllTemplateDPU extends App {
 
   val ELEM_TYPES = Seq("E5M2", "E4M3", "E3M2", "E2M3", "E2M1", "INT8")
   val ALL_SCALES = Seq("UE8M0", "UE7M1", "UE6M2", "UE5M3", "UE4M4", "UE4M3")
@@ -110,7 +110,7 @@ object EmitAllSimpleDPU extends App {
     println(f"SoP=${ww.sopFieldW}%3d term=${ww.scaledTermW}%3d fa=${ww.finalAdderW}%3d")
 
     ChiselStage.emitSystemVerilogFile(
-      new SimpleDPU(cfg),
+      new TemplateDPU(cfg),
       Array("--target-dir", outDir),
       firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info"),
     )

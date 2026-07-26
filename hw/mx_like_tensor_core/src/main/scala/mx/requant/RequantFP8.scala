@@ -2,7 +2,7 @@ package mx.requant
 
 import chisel3._
 import chisel3.util._
-import mx.mac.ElementType
+import mx_template.{Elem, Scale}
 
 // ============================================================
 // NVFP4 max-normal limits per element format (OCP-MX semantics)
@@ -21,7 +21,7 @@ import mx.mac.ElementType
  *   E3M2 / E2M3 / E2M1 (NVFP4-style FP6/FP4): no Inf/NaN → top code IS a value.
  */
 private object NVFP4Limits {
-  def apply(t: ElementType): (Int, Int) = t.name match {
+  def apply(t: Elem): (Int, Int) = t.name match {
     case "E5M2" => (30, (1 << t.elementWidthMant) - 1)  // IEEE-like; all-ones exp = Inf/NaN
     case "E4M3" => (15, (1 << t.elementWidthMant) - 2)  // OCP-MX: only (s,1111,111) is NaN
     case "E3M2" => (7,  (1 << t.elementWidthMant) - 1)  // FP6: no Inf/NaN
@@ -549,27 +549,27 @@ object RequantFP6Main extends App {
 
 /** Emit Verilog for a matrix of output-type × scale-type × geometry combinations. */
 object AllRequantFP8Main extends App {
-  import mx.mac.{MXFormats, ScaleFormats}
+  import mx_template.{Elem, Scale}
 
   // (elemType, scaleType, blockSize, tileRows, tileCols)
   val configs = Seq(
     // FP8 variants
-    (MXFormats.E5M2, ScaleFormats.UE8M0, 32, 4, 4),
-    (MXFormats.E4M3, ScaleFormats.UE8M0, 16, 8, 8),
-    (MXFormats.E4M3, ScaleFormats.UE8M0, 64, 4, 4),
-    (MXFormats.E5M2, ScaleFormats.UE7M1, 32, 4, 4),
-    (MXFormats.E4M3, ScaleFormats.UE7M1, 64, 4, 4),
-    (MXFormats.E5M2, ScaleFormats.UE6M2, 32, 4, 4),
-    (MXFormats.E4M3, ScaleFormats.UE6M2, 64, 4, 4),
-    (MXFormats.E5M2, ScaleFormats.UE4M4, 32, 4, 4),
-    (MXFormats.E4M3, ScaleFormats.UE4M4, 64, 4, 4),
+    (Elem.E5M2, Scale.UE8M0, 32, 4, 4),
+    (Elem.E4M3, Scale.UE8M0, 16, 8, 8),
+    (Elem.E4M3, Scale.UE8M0, 64, 4, 4),
+    (Elem.E5M2, Scale.UE7M1, 32, 4, 4),
+    (Elem.E4M3, Scale.UE7M1, 64, 4, 4),
+    (Elem.E5M2, Scale.UE6M2, 32, 4, 4),
+    (Elem.E4M3, Scale.UE6M2, 64, 4, 4),
+    (Elem.E5M2, Scale.UE4M4, 32, 4, 4),
+    (Elem.E4M3, Scale.UE4M4, 64, 4, 4),
     // FP6 variants
-    (MXFormats.E3M2, ScaleFormats.UE8M0, 32, 4, 4),
-    (MXFormats.E3M2, ScaleFormats.UE8M0, 32, 8, 8),
-    (MXFormats.E2M3, ScaleFormats.UE8M0, 32, 4, 4),
-    (MXFormats.E2M3, ScaleFormats.UE8M0, 32, 8, 8),
-    (MXFormats.E3M2, ScaleFormats.UE7M1, 32, 4, 4),
-    (MXFormats.E2M3, ScaleFormats.UE7M1, 32, 4, 4),
+    (Elem.E3M2, Scale.UE8M0, 32, 4, 4),
+    (Elem.E3M2, Scale.UE8M0, 32, 8, 8),
+    (Elem.E2M3, Scale.UE8M0, 32, 4, 4),
+    (Elem.E2M3, Scale.UE8M0, 32, 8, 8),
+    (Elem.E3M2, Scale.UE7M1, 32, 4, 4),
+    (Elem.E2M3, Scale.UE7M1, 32, 4, 4),
   )
 
   for ((elemType, scaleType, blockSize, tileRows, tileCols) <- configs) {

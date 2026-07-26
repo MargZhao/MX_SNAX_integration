@@ -2,7 +2,7 @@ package mx.requant
 
 import chisel3._
 import chisel3.util._
-import mx.mac.{ScaleType, ScaleFormats}
+import mx_template.{Scale}
 
 // ============================================================
 // Config
@@ -21,7 +21,7 @@ case class RequantINT8Config(
   blockSize: Int,
   tileRows:  Int,
   tileCols:  Int,
-  scaleType: ScaleType = ScaleFormats.UE8M0,
+  scaleType: Scale = Scale.UE8M0,
   /** Mantissa width (explicit, no implicit-1) of the FP input.  Default 23
    *  reproduces full IEEE-754 FP32.  Set this to the upstream PE's M_acc
    *  (e.g. 13 / 14 for INT8² configs) to shrink the buffer + division
@@ -468,12 +468,12 @@ object RequantINT8Main extends App {
 /** Emit all ExMy variants for the INT8 requantizer. */
 object AllRequantINT8Main extends App {
   val configs = Seq(
-    (32, 4, 4, ScaleFormats.UE8M0),
-    (32, 4, 4, ScaleFormats.UE7M1),
-    (32, 4, 4, ScaleFormats.UE6M2),
-    (32, 4, 4, ScaleFormats.UE4M4),
-    (16, 8, 8, ScaleFormats.UE8M0),
-    (16, 8, 8, ScaleFormats.UE7M1),
+    (32, 4, 4, Scale.UE8M0),
+    (32, 4, 4, Scale.UE7M1),
+    (32, 4, 4, Scale.UE6M2),
+    (32, 4, 4, Scale.UE4M4),
+    (16, 8, 8, Scale.UE8M0),
+    (16, 8, 8, Scale.UE7M1),
   )
   for ((blk, tr, tc, st) <- configs) {
     val cfg = RequantINT8Config(blk, tr, tc, st)

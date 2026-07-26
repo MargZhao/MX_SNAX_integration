@@ -1,72 +1,33 @@
-// mx_like_simple_core — 4-way dot-product unit with BF16 accumulator.
-//
-// Architecture: Lutz et al. ARITH 2024 "Fused FP8 4-Way Dot Product With
-// Scaling and FP32 Accumulation", Section II.B (Early Accumulation).
-// Extensions over Lutz: (1) per-config tailored widths, (2) fractional
-// scale mantissa via post-tree multiplier, (3) BF16 output.
-//
-// Module hierarchy (each submodule gets a distinct RTL block so synthesis
-// can measure per-stage PPA):
-//
-//   SimpleDPU_<A>_<W>_<S>
-//   ├── LaneMul_<A>_<W>            × N  (per-lane FP or INT multiply)
-//   ├── AlignSumTree_<A>_<W>_vec4  × 1  (barrel-shift align + signed sum)
-//   ├── ScaleMult_<A>_<W>_<S>      × 1  (only when S.m > 0; UE8M0 skips)
-//   └── AccUpdate_<A>_<W>_<S>      × 1  (accreg align + add + LSC + RNE)
-//
-// Timing / reset: async active-low reset (matches mx_like_tensor_core and
-// chisel_acc convention — `withReset((!reset.asBool).asAsyncReset)(RegInit(...))`
-// produces `always_ff @(posedge clock or posedge reset)` in the emitted SV).
 
-package mx_simple
+package mx_template
 
 import chisel3._
 import chisel3.util._
 
-// ─────────────────────────────────────────────────────────────
-// Bundles
-// ─────────────────────────────────────────────────────────────
-
-/** BF16 output record: 1 sign + 8 exp + 7 mant. */
 class BF16Reg extends Bundle {
   val sign = Bool()
   val exp  = UInt(BF16.expBits.W)
   val mant = UInt(BF16.mantBits.W)
 }
 
-/** One element operand: 1 sign + eE exp + eM mant.
-  * INT8 (e==0) still has a sign bit; the exp field is 0-width. */
 class ElemOperand(val el: Elem) extends Bundle {
   val sign = Bool()
   val exp  = UInt(el.e.W)
   val mant = UInt(el.m.W)
 }
 
-/** Block scale operand: eE exp + eM mant (unsigned). */
 class ScaleOperand(val sc: Scale) extends Bundle {
   val exp  = UInt(sc.e.W)
   val mant = UInt(sc.m.W)
 }
-
-/** Output of one lane's multiply: unsigned mant + signed exp + sign. */
 class LaneProduct(prodMantW: Int, expW: Int) extends Bundle {
   val mant = UInt(prodMantW.W)
   val exp  = SInt(expW.W)
   val sign = Bool()
 }
 
-// ─────────────────────────────────────────────────────────────
-// Submodule 1: LaneMul — per-lane operand multiply
-// ─────────────────────────────────────────────────────────────
-
-/** Per-lane multiplier.
-  *
-  * FP:   sig = {hidden=(exp!=0), mant};  exp_out = (exp-A.bias) + (exp-W.bias)
-  *       with subnormal fix (biased 0 -> effective biased 1).
-  * INT8: sig = mant with 0 MSB (no hidden);  exp_out = A.impSc + W.impSc (const).
-  */
-class LaneMul(A: Elem, W: Elem, expW: Int) extends Module {
-  override def desiredName = s"LaneMul_${A.name}_${W.name}"
+class Preprocess(A: Elem, W: Elem, expW: Int) extends Module {
+  override def desiredName = s"Preprocess_${A.name}_${W.name}"
 
   private val prodMantW = (A.m + 1) + (W.m + 1)
 
@@ -103,12 +64,6 @@ class LaneMul(A: Elem, W: Elem, expW: Int) extends Module {
   io.out.sign := io.a.sign ^ io.w.sign
 }
 
-// ─────────────────────────────────────────────────────────────
-// Submodule 2: AlignSumTree — barrel-shift align + signed sum
-// ─────────────────────────────────────────────────────────────
-
-/** Places each lane's signed product at bit position `sopShift + prodExp[i]`
-  * in a `sopFieldW`-bit signed field, then reduces via signed add. */
 class AlignSumTree(cfg: DPUConfig) extends Module {
   private val ww = Widths(cfg)
   override def desiredName =
@@ -136,12 +91,6 @@ class AlignSumTree(cfg: DPUConfig) extends Module {
   io.sopField := alignedProd.reduce(_ + _)
 }
 
-// ─────────────────────────────────────────────────────────────
-// Submodule 3: ScaleMult — post-tree scale mant multiply
-// ─────────────────────────────────────────────────────────────
-
-/** SoP field × (1.sA_mant)(1.sW_mant) → scaled term.
-  * Only instantiated when `S.m > 0` (UE8M0 bypasses this stage). */
 class ScaleMult(cfg: DPUConfig) extends Module {
   private val ww = Widths(cfg)
   require(cfg.S.m > 0, "ScaleMult should not be instantiated for UE8M0")
@@ -157,20 +106,12 @@ class ScaleMult(cfg: DPUConfig) extends Module {
     val scaledTerm  = Output(SInt(ww.scaledTermW.W))
   })
 
-  // Scale significand: {hidden, mant}. hidden=0 for subnormal scale (biased
-  // exp = 0), hidden=1 for normal. IEEE FP convention.
   private val scaleAsig = Cat(io.scaleAhid, io.scaleAmant)   // (mS+1) bits
   private val scaleWsig = Cat(io.scaleWhid, io.scaleWmant)   // (mS+1) bits
   private val smp       = (scaleAsig * scaleWsig).pad(ww.scaleMantProdW + 1)
   io.scaledTerm := (io.sopField * smp.zext).pad(ww.scaledTermW).asSInt
 }
 
-// ─────────────────────────────────────────────────────────────
-// Submodule 4: AccUpdate — accreg align + signed CPA + LSC + RNE + accreg
-// ─────────────────────────────────────────────────────────────
-
-/** Combines a per-cycle `scaledTerm` with the internal BF16 accreg.
-  * Contains the sole state register in the whole design. */
 class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
   private val ww = Widths(cfg)
   private val S  = cfg.S
@@ -193,22 +134,13 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
     val dbg_accShiftedInt  = if (debug) Some(Output(SInt(ww.finalAdderW.W))) else None
   })
 
-  // ── State register (async active-HIGH reset).
-  // Emitted SV uses `always_ff @(posedge clock or posedge reset)`; polarity
-  // is: reset=1 asserts reset (registers clear), reset=0 normal operation.
-  // Rationale (vs tensor_core's `(!reset).asAsyncReset` active-low convention):
-  // chiseltest's default reset polarity is active-high — matching it here
-  // avoids needing to manually poke reset in every test. The synthesized
-  // testbench (test/gen_simple_dpu_tb.py) drives the same polarity explicitly.
+
   val accreg = withReset(reset.asAsyncReset)(RegInit({
     val z = Wire(new BF16Reg)
     z.sign := false.B; z.exp := 0.U; z.mant := 0.U
     z
   }))
 
-  // ── Scale exp addition ─────────────────────────────────────
-  // Subnormal fix (same as element side): biased exp == 0 → treat as biased 1
-  // so the value = 0.mant * 2^(1-bias) is computed correctly downstream.
   private val scaleAexpFixed: SInt =
     Mux(io.scaleAexp === 0.U, 1.S(ww.scaleExpSumW.W),
                                io.scaleAexp.zext.pad(ww.scaleExpSumW))
@@ -218,7 +150,6 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
   private val scaleExpSum: SInt =
     scaleAexpFixed + scaleWexpFixed - (2 * S.bias).S(ww.scaleExpSumW.W)
 
-  // ── Accreg alignment ───────────────────────────────────────
   private val accHidden = accreg.exp =/= 0.U
   private val accSig    = Cat(accHidden, accreg.mant)                 // 8 bits
   private val accUnbiasedExp = accreg.exp.zext - BF16.bias.S
@@ -246,12 +177,10 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
   private val accSignedSig: SInt = Mux(accreg.sign, -accSigMag, accSigMag)
   private val accWide: SInt = accSignedSig.pad(ww.finalAdderW)
 
-  // Left-shift path
   private val accShiftedLeftGrown: SInt = accWide << accShiftClamped
   private val accShiftedLeftS: SInt =
     accShiftedLeftGrown.asUInt.apply(ww.finalAdderW - 1, 0).asSInt
 
-  // Right-shift path (with sticky)
   private val accRightShift = Mux(accShiftIsRight, accShiftClamped, 0.U)
   private val accLostMask = ((1.U << accRightShift) - 1.U)
   private val accSticky = (accSignedSig.asUInt.pad(ww.finalAdderW) & accLostMask).orR
@@ -259,12 +188,10 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
 
   private val accAligned: SInt = Mux(accShiftIsRight, accShiftedRightS, accShiftedLeftS)
 
-  // ── Signed CPA sum ─────────────────────────────────────────
   private val termInField: SInt = io.scaledTerm.pad(ww.finalAdderW)
   private val stickyLSB: SInt = Mux(accShiftIsRight, accSticky.asSInt.pad(1), 0.S(1.W))
   private val sumField: SInt = termInField + accAligned + stickyLSB
 
-  // ── Normalize (sign-magnitude + LSC) ──────────────────────
   private val sumSign = sumField(ww.finalAdderW - 1)
   private val sumMag = Mux(sumSign, (-sumField).asUInt, sumField.asUInt)(
     ww.finalAdderW - 1, 0)
@@ -276,7 +203,6 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
 
   private val normalized = (sumMag << lz)(ww.finalAdderW - 1, 0)
 
-  // ── RNE to BF16 ────────────────────────────────────────────
   private val resExpUnbiased = scaleExpSum.pad(lzcW + S.e + 4) +
     (ww.finalAdderW - 1 - ww.termUnitPos).S -
     lz.zext
@@ -289,12 +215,6 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
   private val stickyPlus = stickyBits | (stickyLSB =/= 0.S)
 
   private val roundUp = guardBit && (roundBit || stickyPlus || gField(0))
-  // `+&` GROWS the width so a carry-out from an all-ones gField is captured
-  // in bit BF16.sigBits (the roundCarry signal below). `+` (same-width add)
-  // silently discards the carry, dropping the exp bump and producing hw ≈
-  // golden/2 whenever RNE triggers a mantissa overflow (seen on the "last
-  // cycle" of many workload configs where accumulated sums happen to have
-  // that pattern).
   private val gFieldPlusRnd = (gField +& roundUp.asUInt).pad(BF16.sigBits + 1)
 
   private val roundCarry = gFieldPlusRnd(BF16.sigBits)
@@ -304,7 +224,6 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
                                  )(BF16.mantBits - 1, 0)
   private val expAfterRnd = resExpUnbiased + Mux(roundCarry, 1.S, 0.S)
 
-  // ── Pack BF16 ─────────────────────────────────────────────
   private val finalBiased = expAfterRnd + BF16.bias.S
   private val expUnderflow = finalBiased <= 0.S
   private val expOverflow  = finalBiased >= ((1 << BF16.expBits) - 1).S
@@ -316,7 +235,6 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
                      finalBiased.asUInt.pad(BF16.expBits)))
   newAcc.mant := Mux(sumIsZero || expUnderflow, 0.U, mantAfterRnd)
 
-  // ── State update ──────────────────────────────────────────
   when(io.clearAcc) {
     accreg.sign := false.B
     accreg.exp  := 0.U
@@ -337,13 +255,7 @@ class AccUpdate(cfg: DPUConfig, debug: Boolean = false) extends Module {
   io.dbg_accShiftedInt.foreach(_ := accAligned)
 }
 
-// ─────────────────────────────────────────────────────────────
-// Top: SimpleDPU — glues LaneMul × N + AlignSumTree + ScaleMult + AccUpdate
-// ─────────────────────────────────────────────────────────────
-
-/** Debug port bundle — internal per-stage signals for offline analysis.
-  * Only elaborated when SimpleDPU is instantiated with `debug=true`. */
-class SimpleDPUDebug(cfg: DPUConfig) extends Bundle {
+class TemplateDPUDebug(cfg: DPUConfig) extends Bundle {
   private val ww = Widths(cfg)
   val laneMant  = Output(Vec(cfg.N, UInt(ww.prodMantW.W)))
   val laneExp   = Output(Vec(cfg.N, SInt(ww.expSignedW.W)))
@@ -359,7 +271,7 @@ class SimpleDPUDebug(cfg: DPUConfig) extends Bundle {
   val accShiftedInt = Output(SInt(ww.finalAdderW.W))
 }
 
-class SimpleDPUIO(cfg: DPUConfig, debug: Boolean = false) extends Bundle {
+class TemplateDPUIO(cfg: DPUConfig, debug: Boolean = false) extends Bundle {
   val enable   = Input(Bool())
   val clearAcc = Input(Bool())
   val a        = Input(Vec(cfg.N, new ElemOperand(cfg.A)))
@@ -367,30 +279,29 @@ class SimpleDPUIO(cfg: DPUConfig, debug: Boolean = false) extends Bundle {
   val scaleA   = Input(new ScaleOperand(cfg.S))
   val scaleW   = Input(new ScaleOperand(cfg.S))
   val accOut   = Output(new BF16Reg)
-  val dbg      = if (debug) Some(new SimpleDPUDebug(cfg)) else None
+  val dbg      = if (debug) Some(new TemplateDPUDebug(cfg)) else None
 }
 
-class SimpleDPU(val cfg: DPUConfig, val debug: Boolean = false) extends Module {
+class TemplateDPU(val cfg: DPUConfig, val debug: Boolean = false) extends Module {
   override def desiredName =
-    s"SimpleDPU_${cfg.A.name}_${cfg.W.name}_${cfg.S.name}"
+    s"TemplateDPU_${cfg.A.name}_${cfg.W.name}_${cfg.S.name}"
 
-  val io = IO(new SimpleDPUIO(cfg, debug))
+  val io = IO(new TemplateDPUIO(cfg, debug))
   private val ww = Widths(cfg)
 
-  // ── LaneMul × N ────────────────────────────────────────────
   private val lanes = Wire(Vec(cfg.N, new LaneProduct(ww.prodMantW, ww.expSignedW)))
   for (i <- 0 until cfg.N) {
-    val lm = Module(new LaneMul(cfg.A, cfg.W, ww.expSignedW))
+    val lm = Module(new Preprocess(cfg.A, cfg.W, ww.expSignedW))
     lm.io.a := io.a(i)
     lm.io.w := io.w(i)
     lanes(i) := lm.io.out
   }
 
-  // ── AlignSumTree ───────────────────────────────────────────
+  
   private val tree = Module(new AlignSumTree(cfg))
   tree.io.lanes := lanes
 
-  // ── ScaleMult (only when S.m > 0) ─────────────────────────
+  
   private val scaledTerm: SInt = if (cfg.S.m == 0) {
     tree.io.sopField
   } else {
@@ -403,7 +314,6 @@ class SimpleDPU(val cfg: DPUConfig, val debug: Boolean = false) extends Module {
     sm.io.scaledTerm
   }
 
-  // ── AccUpdate (contains accreg register) ──────────────────
   private val acc = Module(new AccUpdate(cfg, debug))
   acc.io.scaledTerm := scaledTerm
   acc.io.scaleAexp  := io.scaleA.exp
@@ -412,7 +322,6 @@ class SimpleDPU(val cfg: DPUConfig, val debug: Boolean = false) extends Module {
   acc.io.enable     := io.enable
   io.accOut         := acc.io.accOut
 
-  // ── Debug taps (only wired when debug=true) ──────────────
   io.dbg.foreach { d =>
     for (i <- 0 until cfg.N) {
       d.laneMant(i) := lanes(i).mant

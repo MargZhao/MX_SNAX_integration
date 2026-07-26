@@ -1,6 +1,6 @@
 package mx.requant
 
-import mx.mac.{ElementType, MXFormats, ScaleType, ScaleFormats}
+import mx_template.{Elem, Scale}
 
 /**
  * Configuration for the FP32 → MXFP8 requantization block.
@@ -17,8 +17,8 @@ case class RequantConfig(
   blockSize:  Int,
   tileRows:   Int,
   tileCols:   Int,
-  outputType: ElementType,
-  scaleType:  ScaleType = ScaleFormats.UE8M0,
+  outputType: Elem,
+  scaleType:  Scale = Scale.UE8M0,
   /** Mantissa width (explicit, no implicit-1) of the FP input that the PE
    *  produces.  Default 23 reproduces full IEEE-754 FP32 (32-bit input).
    *  When the upstream PE outputs a narrower FP format (e.g. FP20 for
@@ -54,7 +54,7 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E5M2
+    outputType = Elem.E5M2
   )
 
   /** 8×8 tile, block-16, E4M3 output, UE8M0 scale */
@@ -62,7 +62,7 @@ object DefaultRequantConfigs {
     blockSize  = 16,
     tileRows   = 8,
     tileCols   = 8,
-    outputType = MXFormats.E4M3
+    outputType = Elem.E4M3
   )
 
   /** 4×4 tile, block-64, E4M3 output, UE8M0 scale */
@@ -70,7 +70,7 @@ object DefaultRequantConfigs {
     blockSize  = 64,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E4M3
+    outputType = Elem.E4M3
   )
 
   // ── UE7M1 (1-bit mantissa scale) ────────────────────────────
@@ -79,8 +79,8 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E5M2,
-    scaleType  = ScaleFormats.UE7M1
+    outputType = Elem.E5M2,
+    scaleType  = Scale.UE7M1
   )
 
   /** 4×4 tile, block-64, E4M3 output, UE7M1 scale */
@@ -88,8 +88,8 @@ object DefaultRequantConfigs {
     blockSize  = 64,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E4M3,
-    scaleType  = ScaleFormats.UE7M1
+    outputType = Elem.E4M3,
+    scaleType  = Scale.UE7M1
   )
 
   // ── UE6M2 (2-bit mantissa scale) ────────────────────────────
@@ -98,8 +98,8 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E5M2,
-    scaleType  = ScaleFormats.UE6M2
+    outputType = Elem.E5M2,
+    scaleType  = Scale.UE6M2
   )
 
   /** 4×4 tile, block-64, E4M3 output, UE6M2 scale */
@@ -107,8 +107,8 @@ object DefaultRequantConfigs {
     blockSize  = 64,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E4M3,
-    scaleType  = ScaleFormats.UE6M2
+    outputType = Elem.E4M3,
+    scaleType  = Scale.UE6M2
   )
 
   // ── UE4M4 (4-bit mantissa scale) ────────────────────────────
@@ -117,8 +117,8 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E5M2,
-    scaleType  = ScaleFormats.UE4M4
+    outputType = Elem.E5M2,
+    scaleType  = Scale.UE4M4
   )
 
     /** 4×4 tile, block-32, E5M2 output, UE4M4 scale */
@@ -126,8 +126,8 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 16,
-    outputType = MXFormats.E5M2,
-    scaleType  = ScaleFormats.UE4M4
+    outputType = Elem.E5M2,
+    scaleType  = Scale.UE4M4
   )
 
     /** 4×4 tile, block-32, E5M2 output, UE4M4 scale */
@@ -135,8 +135,8 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 16,
-    outputType = MXFormats.E5M2,
-    scaleType  = ScaleFormats.UE6M2
+    outputType = Elem.E5M2,
+    scaleType  = Scale.UE6M2
   )
 
 
@@ -147,7 +147,7 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E3M2
+    outputType = Elem.E3M2
   )
 
   /** 8×8 tile, block-32, E3M2 output, UE8M0 scale */
@@ -155,7 +155,7 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 8,
     tileCols   = 8,
-    outputType = MXFormats.E3M2
+    outputType = Elem.E3M2
   )
 
   // ── FP6 E2M3 (1+2+3=6 bits) ────────────────────────────────
@@ -164,7 +164,7 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 4,
     tileCols   = 4,
-    outputType = MXFormats.E2M3
+    outputType = Elem.E2M3
   )
 
   /** 8×8 tile, block-32, E2M3 output, UE8M0 scale */
@@ -172,14 +172,14 @@ object DefaultRequantConfigs {
     blockSize  = 32,
     tileRows   = 8,
     tileCols   = 8,
-    outputType = MXFormats.E2M3
+    outputType = Elem.E2M3
   )
 
   /** Enumerate all non-UE8M0 scale configs for a given element type. */
   def allScaleVariants(
-    blockSize: Int, tileRows: Int, tileCols: Int, outputType: ElementType
+    blockSize: Int, tileRows: Int, tileCols: Int, outputType: Elem
   ): Seq[RequantConfig] =
-    ScaleFormats.allScaleTypes.map(st =>
+    Scale.allScales.map(st =>
       RequantConfig(blockSize, tileRows, tileCols, outputType, st)
     )
 }

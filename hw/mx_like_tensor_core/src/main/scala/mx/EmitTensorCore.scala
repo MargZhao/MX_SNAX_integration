@@ -1,16 +1,9 @@
 package mx
 
 import chisel3._
-import mx.mac.{MXFormats, ScaleFormats, ScaleAddConfig, TreeArch, ElementType, ScaleType}
-import mx.array.{
-  ArchOverride,
-  PEArrayConfig, PEArrayINT8Config, PEArrayFP32Config, PEArrayBF16Config,
-  PEArrayWrapper, PEArrayWrapperINT8, PEArrayWrapperFP32, PEArrayWrapperBF16,
-  SimpleArrayConfig, SimplePEArray, SimpleOut
-}
-import mx.requant.{RequantConfig, RequantFP8, RequantINT8, RequantINT8Config}
+import mx_template.{Elem, Scale, DPUConfig}
+import mx.array.{TemplateArrayConfig, TemplatePEArray, TemplateOut}
 import java.io.File
-import scala.io.Source
 
 /** Parametric CLI to emit a single tensor-core baseline PE_Array.
  *
@@ -75,7 +68,7 @@ object EmitTensorCore extends App {
     emitIntegrated:     Boolean = true,
     emitStandaloneRq:   Boolean = true,
     csvPath:            String  = "data/macc_final_selection.csv",
-    dpu:                String  = "fused",       // "fused" = FDPU (narrow-FP M_acc); "simple" = SimpleDPU (BF16)
+    dpu:                String  = "fused",       // "fused" = FDPU (narrow-FP M_acc); "simple" = TemplateDPU (BF16)
   )
 
   // quantize_mode → out-type (matches orchestrator gen_pe_array_rtl.py _REQUANT_LABEL)
@@ -144,222 +137,53 @@ object EmitTensorCore extends App {
   }
 
   // ── Format maps ───────────────────────────────────────────────────────────
-  private val FMT = Map[String, ElementType](
-    "INT8" -> MXFormats.INT8, "E5M2" -> MXFormats.E5M2,
-    "E4M3" -> MXFormats.E4M3, "E3M2" -> MXFormats.E3M2,
-    "E2M3" -> MXFormats.E2M3, "E2M1" -> MXFormats.E2M1)
-  private val SCL = Map[String, ScaleType](
-    "UE8M0" -> ScaleFormats.UE8M0, "UE7M1" -> ScaleFormats.UE7M1,
-    "UE6M2" -> ScaleFormats.UE6M2, "UE5M3" -> ScaleFormats.UE5M3,
-    "UE4M4" -> ScaleFormats.UE4M4, "UE4M3" -> ScaleFormats.UE4M3)
+  private val FMT = Map[String, Elem](
+    "INT8" -> Elem.INT8, "E5M2" -> Elem.E5M2,
+    "E4M3" -> Elem.E4M3, "E3M2" -> Elem.E3M2,
+    "E2M3" -> Elem.E2M3, "E2M1" -> Elem.E2M1)
+  private val SCL = Map[String, Scale](
+    "UE8M0" -> Scale.UE8M0, "UE7M1" -> Scale.UE7M1,
+    "UE6M2" -> Scale.UE6M2, "UE5M3" -> Scale.UE5M3,
+    "UE4M4" -> Scale.UE4M4, "UE4M3" -> Scale.UE4M3)
 
-  private val DEFAULT_M_PER_ACT = Map(
-    "INT8" -> 14, "E5M2" -> 11, "E4M3" -> 12,
-    "E3M2" -> 11, "E2M3" -> 12, "E2M1" ->  9)
-
-  // ── M_acc lookup: CLI > CSV > per-activation fallback ─────────────────────
-  //
-  // Accepts either of two CSV schemas:
-  //   (a) 126-config extended    : act,   weight, scale, m_acc [, source, ...]
-  //   (b) 14-config raw sweep    : typeA, typeB, scale, M_sel [, eps_acc, floor]
-  // Column names picked in that priority order.  Extra columns ignored.
-  private def loadCsvMacc(csvPath: String): Map[(String, String, String), Int] = {
-    val f = new File(csvPath)
-    if (!f.exists) {
-      System.err.println(s"[warn] CSV not found: $csvPath — falling back to per-activation defaults")
-      return Map.empty
-    }
-    val src = Source.fromFile(f)
-    val lines = try src.getLines().toList finally src.close()
-    if (lines.isEmpty) return Map.empty
-    val header = lines.head.split(",").map(_.trim)
-    // Try schema (a) first, then (b).
-    val (iA, iB, iS, iM, schema) = {
-      val a = (header.indexOf("act"),   header.indexOf("weight"), header.indexOf("scale"), header.indexOf("m_acc"))
-      if (a._1 >= 0 && a._2 >= 0 && a._3 >= 0 && a._4 >= 0)
-        (a._1, a._2, a._3, a._4, "extended")
-      else {
-        val b = (header.indexOf("typeA"), header.indexOf("typeB"), header.indexOf("scale"), header.indexOf("M_sel"))
-        if (b._1 >= 0 && b._2 >= 0 && b._3 >= 0 && b._4 >= 0)
-          (b._1, b._2, b._3, b._4, "raw-sweep")
-        else
-          (-1, -1, -1, -1, "unknown")
-      }
-    }
-    if (schema == "unknown") {
-      System.err.println(s"[warn] CSV $csvPath missing expected columns " +
-                         "(act,weight,scale,m_acc) or (typeA,typeB,scale,M_sel); ignoring")
-      return Map.empty
-    }
-    lines.drop(1).flatMap { ln =>
-      val c = ln.split(",").map(_.trim)
-      if (c.length > math.max(math.max(iA, iB), math.max(iS, iM)))
-        Some((c(iA), c(iB), c(iS)) -> c(iM).toInt)
-      else None
-    }.toMap
-  }
-
-  private def resolveMacc(o: Opts): (Int, String) = {
-    o.mAcc match {
-      case Some(v) => (v, "CLI --m-acc")
-      case None =>
-        val csv = loadCsvMacc(o.csvPath)
-        csv.get((o.act, o.weight, o.scale)) match {
-          case Some(v) => (v, s"CSV ${o.csvPath}")
-          case None =>
-            DEFAULT_M_PER_ACT.get(o.act) match {
-              case Some(v) => (v, "per-activation fallback")
-              case None =>
-                System.err.println(s"[error] Cannot resolve M_acc for (${o.act}, ${o.weight}, ${o.scale}). " +
-                                   "Pass --m-acc explicitly or extend DEFAULT_M_PER_ACT.")
-                sys.exit(1)
-            }
-        }
-    }
-  }
-
-  // ── Main ──────────────────────────────────────────────────────────────────
-  private val opts0 = parseArgs(args)
-
-  // Resolve output type first (so M_acc override for FP32 can apply below).
-  private val outTypeStr0: String =
-    if (opts0.outType.nonEmpty) opts0.outType else opts0.act
-
-  // FP32 pass-through: force M_acc=23 so the emitted io_result element width
-  // is genuinely 32 bits (1+8+23) — otherwise the wrapper's narrow-FP output
-  // (1+8+M_acc where M_acc is typically 8..14) won't match the orchestrator's
-  // _o_bitwidth(quantize_mode=0)=32 assumption on the streamer writer side.
-  private val opts =
-    if (outTypeStr0 == "FP32" && opts0.mAcc.isEmpty)
-      opts0.copy(mAcc = Some(23))
-    else opts0
-
-  private val (mAcc, mAccSrc0) = resolveMacc(opts)
-  private val mAccSrc =
-    if (outTypeStr0 == "FP32" && opts0.mAcc.isEmpty) "forced-FP32-passthrough"
-    else mAccSrc0
+  // ── Main (TemplateDPU-only) ──────────────────────────────────────────────────
+  // The FDPU (fused) datapath + its M_acc/CSV resolution have been removed; this
+  // emitter now produces only the TemplateDPU "PE_Array" (BF16 accumulator).
+  private val opts = parseArgs(args)
 
   private val actType   = FMT.getOrElse(opts.act,    { System.err.println(s"Unknown --act ${opts.act}"); sys.exit(1) })
   private val wtType    = FMT.getOrElse(opts.weight, { System.err.println(s"Unknown --weight ${opts.weight}"); sys.exit(1) })
   private val scaleType = SCL.getOrElse(opts.scale,  { System.err.println(s"Unknown --scale ${opts.scale}"); sys.exit(1) })
 
-  // Resolve output type: --out-type / --quantize-mode > default (= act type)
-  private val outTypeStr: String =
-    if (opts.outType.nonEmpty) opts.outType else opts.act
-  private val label  = s"${opts.act}_${opts.weight}_${opts.scale}_M${mAcc}_out${outTypeStr}"
+  // Output type: --out-type / --quantize-mode > default (= act type)
+  private val outTypeStr: String = if (opts.outType.nonEmpty) opts.outType else opts.act
+  private val label  = s"${opts.act}_${opts.weight}_${opts.scale}_out${outTypeStr}"
   private val outdir = opts.outdir.getOrElse(s"generated/$label")
   new File(outdir).mkdirs()
 
-  private val macCfg = ScaleAddConfig(actType, wtType, scaleType)
-  private val arch   = Some(ArchOverride(TreeArch.Generic, 1))
-  private val inW    = 1 + 8 + mAcc
+  private val dpuCfg = DPUConfig(actType, wtType, scaleType, N = opts.vec)
 
-  println(s"=== EmitTensorCore ===")
+  println(s"=== EmitTensorCore (TemplateDPU) ===")
   println(s"  input:    ${opts.act} × ${opts.weight} + ${opts.scale}")
-  println(s"  M_acc:    ${mAcc} (${mAccSrc})")
   println(s"  output:   ${outTypeStr}")
   println(s"  geometry: tile=${opts.tileRows}×${opts.tileCols}, vec=${opts.vec}, block=${opts.blockSize}")
-  println(s"  label:    ${label}")
+  println(s"  DPU:      TemplateDPU (BF16 accumulator)")
   println(s"  outdir:   ${outdir}")
-  println(s"  PE narrow-FP output width (before requant): 1 + 8 + M_acc = FP${inW}")
 
-  // ── SimpleDPU path (--dpu simple): BF16 accumulator, M_acc irrelevant. ──
-  // Drop-in "PE_Array" with the same external ports; only the internals differ.
-  if (opts.dpu == "simple") {
-    println(s"  DPU:      SimpleDPU (BF16 accumulator; M_acc ignored)")
-    val simpleOut: SimpleOut = outTypeStr match {
-      case "FP32" => SimpleOut.FP32
-      case "BF16" => SimpleOut.BF16
-      case "INT8" => SimpleOut.INT8
-      case fp if Seq("E5M2", "E4M3", "E3M2", "E2M3", "E2M1").contains(fp) => SimpleOut.FP8(FMT(fp))
-      case other  => System.err.println(s"Unknown output type for SimpleDPU: $other"); sys.exit(1)
-    }
-    val sCfg = SimpleArrayConfig(macCfg, opts.vec, opts.tileRows, opts.tileCols, simpleOut, opts.blockSize)
-    if (opts.emitIntegrated)
-      emitVerilog(new SimplePEArray(sCfg), Array("--target-dir", outdir))
-    if (opts.emitStandaloneRq)
-      println("  [note] --emit-standalone-requant ignored for SimpleDPU (requant bundled into PE_Array)")
-    sys.exit(0)
-  }
-
-  // ── Dispatch on OUTPUT TYPE (not input) — orchestrator quantize_mode semantics.
-  outTypeStr match {
-
-    case "FP32" =>
-      // Pass-through: PE array's FP32 accumulator IS the output.  No requant.
-      val arrayCfg = PEArrayFP32Config(
-        macCfg              = macCfg,
-        vectorSize          = opts.vec,
-        tileRows            = opts.tileRows,
-        tileCols            = opts.tileCols,
-        accMantBitsOverride = mAcc)
-      if (opts.emitIntegrated)
-        emitVerilog(new PEArrayWrapperFP32(arrayCfg), Array("--target-dir", outdir))
-      if (opts.emitStandaloneRq)
-        println("  [note] --emit-standalone-requant ignored for FP32 pass-through (no requant block)")
-
-    case "BF16" =>
-      // BF16 truncation with no block scaling — RequantBF16 is a per-element
-      // FP32 → BF16 rounding, independent of the shared scale.
-      val arrayCfg = PEArrayBF16Config(
-        macCfg              = macCfg,
-        vectorSize          = opts.vec,
-        tileRows            = opts.tileRows,
-        tileCols            = opts.tileCols,
-        accMantBitsOverride = mAcc)
-      if (opts.emitIntegrated)
-        emitVerilog(new PEArrayWrapperBF16(arrayCfg), Array("--target-dir", outdir))
-      if (opts.emitStandaloneRq)
-        println("  [note] --emit-standalone-requant ignored for BF16 (bundled into wrapper)")
-
-    case "INT8" =>
-      val rqCfg = RequantINT8Config(
-        blockSize      = opts.blockSize,
-        tileRows       = opts.tileRows,
-        tileCols       = opts.tileCols,
-        scaleType      = scaleType,
-        inputMantWidth = mAcc)
-      val arrayCfg = PEArrayINT8Config(
-        macCfg              = macCfg,
-        vectorSize          = opts.vec,
-        tileRows            = opts.tileRows,
-        tileCols            = opts.tileCols,
-        requantCfg          = rqCfg,
-        archOverride        = arch,
-        accMantBitsOverride = mAcc)
-      if (opts.emitIntegrated)
-        emitVerilog(new PEArrayWrapperINT8(arrayCfg), Array("--target-dir", outdir))
-      if (opts.emitStandaloneRq)
-        emitVerilog(new RequantINT8(rqCfg), Array("--target-dir", s"$outdir/requant_standalone"))
-
-    case fp if Seq("E5M2", "E4M3", "E3M2", "E2M3", "E2M1").contains(fp) =>
-      val outType = FMT(fp)
-      val rqCfg = RequantConfig(
-        blockSize      = opts.blockSize,
-        tileRows       = opts.tileRows,
-        tileCols       = opts.tileCols,
-        outputType     = outType,
-        scaleType      = scaleType,
-        inputMantWidth = mAcc)
-      val arrayCfg = PEArrayConfig(
-        macCfg              = macCfg,
-        vectorSize          = opts.vec,
-        tileRows            = opts.tileRows,
-        tileCols            = opts.tileCols,
-        requantCfg          = rqCfg,
-        archOverride        = arch,
-        accMantBitsOverride = mAcc)
-      if (opts.emitIntegrated)
-        emitVerilog(new PEArrayWrapper(arrayCfg), Array("--target-dir", outdir))
-      if (opts.emitStandaloneRq)
-        emitVerilog(new RequantFP8(rqCfg), Array("--target-dir", s"$outdir/requant_standalone"))
-
-    case other =>
-      System.err.println(
-        s"[error] Unknown --out-type / quantize-mode target: $other. " +
-        "Valid: FP32, BF16, INT8, E5M2, E4M3, E3M2, E2M3, E2M1.")
+  // TemplateDPU "PE_Array": drop-in module (same external ports as the old FDPU
+  // wrapper); the requant block is bundled inside.
+  private val simpleOut: TemplateOut = outTypeStr match {
+    case "FP32" => TemplateOut.FP32
+    case "BF16" => TemplateOut.BF16
+    case "INT8" => TemplateOut.INT8
+    case fp if Seq("E5M2", "E4M3", "E3M2", "E2M3", "E2M1").contains(fp) => TemplateOut.FP8(FMT(fp))
+    case other  =>
+      System.err.println(s"[error] Unknown output type: $other " +
+        "(valid: FP32, BF16, INT8, E5M2, E4M3, E3M2, E2M3, E2M1).")
       sys.exit(1)
   }
-
+  private val sCfg = TemplateArrayConfig(dpuCfg, opts.tileRows, opts.tileCols, simpleOut, opts.blockSize)
+  if (opts.emitIntegrated)
+    emitVerilog(new TemplatePEArray(sCfg), Array("--target-dir", outdir))
   println(s"[ok] Emitted to $outdir/")
 }
