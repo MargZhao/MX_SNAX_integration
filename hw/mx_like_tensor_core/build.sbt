@@ -12,7 +12,6 @@ lazy val root = (project in file("."))
     name := "tensor-core-gen",
     libraryDependencies ++= Seq(
       "org.chipsalliance" %% "chisel"     % chiselVersion,
-      "edu.berkeley.cs"   %% "chiseltest" % "6.0.0" % Test,
     ),
     scalacOptions ++= Seq(
       "-language:reflectiveCalls",
